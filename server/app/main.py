@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.__about__ import VERSION
-from app.api import debug_capture, health
+from app.api import debug_capture, health, puzzles
 from app.core.config import get_config
 from app.core.logging import setup_logging
 
@@ -39,6 +39,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(debug_capture.router)
+    app.include_router(puzzles.router)
 
     if CLIENT_DIST.exists():
         app.mount("/", StaticFiles(directory=str(CLIENT_DIST), html=True), name="client")
