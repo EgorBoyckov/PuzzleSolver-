@@ -33,6 +33,10 @@ class PuzzleState(BaseModel):
     steps: list[AssemblyStep] = []
     rejected_edges: list[RejectedEdge] = []
     next_batch_number: int = 1
+    # Заполняются вместо steps, когда у пазла нет образца (meta.has_reference
+    # =False) — см. app.pipeline.no_reference.
+    frame_chain: list[str] = []
+    islands: dict[str, list[str]] = {}
 
 
 class PuzzleStore:

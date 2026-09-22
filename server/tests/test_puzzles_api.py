@@ -149,3 +149,46 @@ def test_create_without_reference(api_client):
     r = api_client.post("/api/puzzles", data={"puzzle_id": "no-ref"})
     assert r.status_code == 200
     assert r.json()["has_reference"] is False
+
+
+def test_no_reference_flow(api_client, synth_dir):
+    out_dir, meta = synth_dir
+
+    r = api_client.post("/api/puzzles", data={"puzzle_id": "noref-flow"})
+    assert r.status_code == 200
+
+    for batch_summary in meta["batches"]:
+        photo_path = out_dir / batch_summary["image"]
+        with photo_path.open("rb") as f:
+            r = api_client.post("/api/puzzles/noref-flow/batches", files={"file": (photo_path.name, f, "image/jpeg")})
+        assert r.status_code == 200, r.text
+
+    r = api_client.get("/api/puzzles/noref-flow")
+    assert r.status_code == 200
+    status = r.json()
+    assert status["located"] is None
+    assert status["frame_chain_length"] is not None
+    assert status["island_count"] is not None
+
+    r = api_client.get("/api/puzzles/noref-flow/no_reference")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["frame_chain"]) == status["frame_chain_length"]
+    assert len(body["islands"]) == status["island_count"]
+    clustered_ids = {pid for members in body["islands"].values() for pid in members}
+    assert len(clustered_ids) == sum(len(v) for v in body["islands"].values())  # без дублей
+
+    # /steps и /no_reference принадлежат разным режимам пазла.
+    r_wrong = api_client.get("/api/puzzles/noref-flow/steps")
+    assert r_wrong.status_code == 200
+    assert r_wrong.json() == []
+
+    with (out_dir / "catalog" / "box.jpg").open("rb") as ref_f:
+        r_ref = api_client.post(
+            "/api/puzzles",
+            data={"puzzle_id": "with-ref-for-guard-test", "grid_rows": meta["rows"], "grid_cols": meta["cols"]},
+            files={"reference": ("box.jpg", ref_f, "image/jpeg")},
+        )
+    assert r_ref.status_code == 200
+    r_guard = api_client.get("/api/puzzles/with-ref-for-guard-test/no_reference")
+    assert r_guard.status_code == 400

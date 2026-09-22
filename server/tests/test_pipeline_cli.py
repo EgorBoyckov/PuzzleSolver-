@@ -81,3 +81,25 @@ def test_run_pipeline_skip_match_omits_steps(synth_batches_dir, tmp_path):
     assert summary["edge_matches"] is None
     assert summary["assembly_steps"] is None
     assert not (out_dir / "catalog" / "steps.json").exists()
+
+
+def test_run_pipeline_without_reference_produces_frame_chain_and_islands(synth_batches_dir, tmp_path):
+    out_dir_synth, _meta = synth_batches_dir
+    out_dir = tmp_path / "run_no_reference"
+
+    summary = run_pipeline_on_folder(out_dir_synth / "batches", "cli-test-noref", out_dir)
+
+    assert summary["edge_matches"] is None
+    assert summary["assembly_steps"] is None
+    assert summary["frame_chain_length"] is not None
+    assert summary["island_count"] is not None
+    assert (out_dir / "catalog" / "frame_chain.json").exists()
+    assert (out_dir / "catalog" / "islands.json").exists()
+
+    with (out_dir / "catalog" / "frame_chain.json").open(encoding="utf-8") as f:
+        chain = json.load(f)
+    assert len(chain) == summary["frame_chain_length"]
+
+    with (out_dir / "catalog" / "islands.json").open(encoding="utf-8") as f:
+        islands = json.load(f)
+    assert len(islands) == summary["island_count"]

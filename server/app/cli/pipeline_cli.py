@@ -21,6 +21,7 @@ from app.core.logging import setup_logging
 from app.pipeline.describe import describe_piece
 from app.pipeline.locate import ReferenceGridIndex, build_reference_index, locate_piece, refit_reference_colors
 from app.pipeline.match import build_edge_matches
+from app.pipeline.no_reference import build_frame_chain, cluster_islands
 from app.pipeline.plan import next_steps_with_catalog
 from app.pipeline.preprocess import preprocess_frame
 from app.pipeline.schemas import PieceKind
@@ -124,13 +125,28 @@ def run_pipeline_on_folder(
         kind_counts[p.kind.value if p.kind else "unknown"] += 1
 
     edges_count = steps_count = None
+    frame_chain_length = island_count = None
     if not skip_match and len(all_pieces) >= 2:
-        edges = build_edge_matches(all_pieces)
-        steps = next_steps_with_catalog(edges, all_pieces, max_steps=max_steps)
-        edges_count, steps_count = len(edges), len(steps)
-        with (catalog_dir / "steps.json").open("w", encoding="utf-8") as f:
-            json.dump([s.model_dump() for s in steps], f, ensure_ascii=False, indent=2)
-        logger.info("match+plan: %d кандидатов-рёбер, %d шагов сборки", edges_count, steps_count)
+        if ref_index is not None:
+            edges = build_edge_matches(all_pieces)
+            steps = next_steps_with_catalog(edges, all_pieces, max_steps=max_steps)
+            edges_count, steps_count = len(edges), len(steps)
+            with (catalog_dir / "steps.json").open("w", encoding="utf-8") as f:
+                json.dump([s.model_dump() for s in steps], f, ensure_ascii=False, indent=2)
+            logger.info("match+plan: %d кандидатов-рёбер, %d шагов сборки", edges_count, steps_count)
+        else:
+            # Без образца позиционного сигнала нет вовсе -> рамка собирается
+            # цепочкой по форме/цвету шва (no_reference.build_frame_chain),
+            # а внутренние детали группируются по похожести на "острова"
+            # для раскладки по лоткам (no_reference.cluster_islands).
+            chain = build_frame_chain(all_pieces)
+            islands = cluster_islands(all_pieces)
+            frame_chain_length, island_count = len(chain), len(islands)
+            with (catalog_dir / "frame_chain.json").open("w", encoding="utf-8") as f:
+                json.dump(chain, f, ensure_ascii=False, indent=2)
+            with (catalog_dir / "islands.json").open("w", encoding="utf-8") as f:
+                json.dump(islands, f, ensure_ascii=False, indent=2)
+            logger.info("no_reference: цепочка рамки из %d деталей, %d островов", frame_chain_length, island_count)
 
     summary = {
         "puzzle_id": puzzle_id,
@@ -143,6 +159,8 @@ def run_pipeline_on_folder(
         "located": sum(1 for p in all_pieces if p.location_candidates) if ref_index is not None else None,
         "edge_matches": edges_count,
         "assembly_steps": steps_count,
+        "frame_chain_length": frame_chain_length,
+        "island_count": island_count,
         "frames": frames_report,
     }
 

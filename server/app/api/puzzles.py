@@ -23,6 +23,7 @@ from app.core.storage import PuzzleState, PuzzleStore, RejectedEdge
 from app.pipeline.describe import describe_piece
 from app.pipeline.locate import ReferenceGridIndex, build_reference_index, locate_piece, refit_reference_colors
 from app.pipeline.match import find_side_candidates
+from app.pipeline.no_reference import build_frame_chain, cluster_islands
 from app.pipeline.plan import apply_feedback, next_steps_with_catalog
 from app.pipeline.preprocess import preprocess_frame
 from app.pipeline.recognize import recognize_pieces_on_frame
@@ -180,6 +181,8 @@ class PuzzleStatus(BaseModel):
     kind_counts: dict[str, int]
     steps_total: int
     steps_pending: int
+    frame_chain_length: int | None
+    island_count: int | None
 
 
 class FeedbackRequest(BaseModel):
@@ -191,6 +194,11 @@ class RecognizedPiece(BaseModel):
     x_px: float
     y_px: float
     rotation_deg: int
+
+
+class NoReferenceResult(BaseModel):
+    frame_chain: list[str]
+    islands: dict[str, list[str]]
 
 
 # --- эндпоинты ---
@@ -266,7 +274,13 @@ async def upload_batch(puzzle_id: str, file: UploadFile) -> BatchUploadResponse:
 
     if ref_index is not None:
         _recompute_locate(store, state)
-    _recompute_match_and_plan(state)
+        _recompute_match_and_plan(state)
+    else:
+        # Без образца позиционного сигнала нет -> рамка цепочкой по форме/
+        # цвету шва, внутренние детали кластеризуются на "острова" для
+        # раскладки по лоткам (см. app.pipeline.no_reference).
+        state.frame_chain = build_frame_chain(state.pieces)
+        state.islands = cluster_islands(state.pieces)
     store.save(state)
 
     logger.info("puzzle '%s' batch %d: %d деталей (всего %d)", puzzle_id, batch_number, len(pieces), len(state.pieces))
@@ -292,7 +306,18 @@ async def get_puzzle(puzzle_id: str) -> PuzzleStatus:
         located=sum(1 for p in state.pieces if p.location_candidates) if state.meta.has_reference else None,
         kind_counts=kind_counts, steps_total=len(state.steps),
         steps_pending=sum(1 for s in state.steps if s.status == StepStatus.PENDING),
+        frame_chain_length=len(state.frame_chain) if not state.meta.has_reference else None,
+        island_count=len(state.islands) if not state.meta.has_reference else None,
     )
+
+
+@router.get("/{puzzle_id}/no_reference", response_model=NoReferenceResult)
+async def get_no_reference(puzzle_id: str) -> NoReferenceResult:
+    store = _get_store()
+    state = _load_or_404(store, puzzle_id)
+    if state.meta.has_reference:
+        raise HTTPException(400, "У пазла есть образец — используйте /steps, а не /no_reference")
+    return NoReferenceResult(frame_chain=state.frame_chain, islands=state.islands)
 
 
 @router.get("/{puzzle_id}/steps", response_model=list[AssemblyStep])
