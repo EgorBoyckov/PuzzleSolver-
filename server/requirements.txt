@@ -1,0 +1,13 @@
+# Этап 0: минимальный набор для каркаса сервера, синтетического датасета и API.
+# Тяжёлые ML-зависимости (torch, faiss, timm/DINOv2, SAM2, SuperPoint+LightGlue)
+# добавляются постепенно на этапах 1-3, чтобы не раздувать образ раньше времени.
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.5.2
+PyYAML==6.0.2
+opencv-contrib-python-headless==4.10.0.84
+numpy==1.26.4
+python-multipart==0.0.9
+websockets==13.1
+Pillow==10.4.0

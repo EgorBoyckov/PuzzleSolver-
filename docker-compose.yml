@@ -1,0 +1,16 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: puzzlevision-server:latest
+    container_name: puzzlevision-server
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./data:/srv/data
+      - ./certs:/srv/certs:ro
+      - ./config:/srv/config
+    environment:
+      - PUZZLEVISION_CONFIG=/srv/config/config.yaml
+    restart: unless-stopped
