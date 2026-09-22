@@ -56,6 +56,7 @@ class PieceRecord(BaseModel):
     # Топ-3 кандидата места на образце: (row, col, rotation_deg, confidence).
     location_candidates: list[tuple[int, int, int, float]] = []
     is_suspect: bool = False     # слипшаяся/обрезанная деталь, требует ручной проверки
+    suspect_reason: str | None = None   # "merged" | "cut_by_frame" | "odd_area" | ...
     tray_label: str | None = None
 
 
@@ -69,6 +70,9 @@ class BatchFrame(BaseModel):
     marker_found: bool
     accepted: bool               # прошёл ли кадр отбраковку (резкость/засветка)
     rejection_reason: str | None = None
+    # Прямоугольник маркера в выпрямленном кадре (px) — сегментация исключает
+    # эту зону, чтобы не принять маркер за деталь.
+    marker_bbox_px: tuple[float, float, float, float] | None = None
 
 
 class EdgeMatch(BaseModel):
