@@ -118,7 +118,7 @@ describe:
   straight_side_deviation_ratio: 0.06
 
 locate:
-  top_k_embedding_candidates: 80
+  top_k_embedding_candidates: 150
   top_k_result_cells: 3
   rotations_deg: [0, 90, 180, 270]
   color_refit_confidence_threshold: 0.85
@@ -136,7 +136,7 @@ locate:
   # Вес эмбеддинга как tie-breaker при почти равных оценках корреляции
   # (соседние ячейки образца часто дают близкий счёт из-за перекрытия
   # паддинг-окон) — доля от диапазона расстояний среди top-K кандидатов.
-  embedding_tiebreak_weight: 0.10
+  embedding_tiebreak_weight: 0.05
 
 match:
   # Веса функции совместимости сторон S = w1*D_shape + w2*D_color + w3*D_pos.
