@@ -42,10 +42,14 @@ def test_fingerprint_distance_finds_correct_rotation():
 
 
 def test_fingerprint_distance_penalizes_kind_mismatch():
-    a = _piece("A", [SideKind.STRAIGHT, SideKind.TAB, SideKind.STRAIGHT, SideKind.BLANK])
-    b = _piece("B", [SideKind.STRAIGHT, SideKind.BLANK, SideKind.STRAIGHT, SideKind.TAB])
+    # [S,T,S,B] повёрнутое на 180° даёт ровно [S,B,S,T] — этот паттерн
+    # симметричен себе при сдвиге на 2, поэтому он не годится для проверки
+    # "несовпадение при ЛЮБОМ повороте"; берём паттерн без вращательной
+    # симметрии, чтобы все 4 позиции расходились при каждом из 4 поворотов.
+    a = _piece("A", [SideKind.TAB, SideKind.TAB, SideKind.TAB, SideKind.TAB])
+    b = _piece("B", [SideKind.BLANK, SideKind.BLANK, SideKind.BLANK, SideKind.BLANK])
     dist, _rot = fingerprint_distance(a, b, penalty_mm=50.0)
-    assert dist > 50.0  # минимум 2 несовпадающих типа стороны при любом повороте
+    assert dist > 50.0  # 4 несовпадающих типа стороны при любом повороте (4*50=200)
 
 
 @pytest.fixture(scope="module")

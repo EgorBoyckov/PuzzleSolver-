@@ -69,11 +69,30 @@ def position_distance_cells(
     piece_b по позиции piece_a и повороту стороны side_a, и фактической
     лучшей клеткой piece_b. None, если у одной из деталей нет location_candidates
     (образец не задан или привязка не удалась) — позиционный сигнал просто
-    недоступен, это не то же самое, что "плохое совпадение"."""
+    недоступен, это не то же самое, что "плохое совпадение".
+
+    Пробовалось расширить это до перебора всех троек топ-3 кандидатов
+    каждой детали (locate даёт заметно лучший recall в топ-3, чем точность
+    топ-1) — измеримо СТАЛО ХУЖЕ (both-correct-locate precision упала с
+    48.86% до 26.04% на тестовом датасете): у топ-3 кандидатов locate
+    склонны быть географически БЛИЗКИМИ друг другу (соседние ячейки часто
+    конкурируют из-за перекрытия окон поиска в locate), поэтому перебор
+    3x3 комбинаций резко повышает шанс, что ЧУЖИЕ детали случайно дадут
+    правдоподобную позиционную пару. Вместо расширения набора кандидатов
+    здесь остаётся строгий топ-1, но с фильтром по уверенности locate:
+    ненадёжная top-1 позиция (ниже locate.color_refit_confidence_threshold
+    — того же порога, что locate использует как границу "уверенной"
+    привязки) полностью исключается из позиционного сигнала, а не
+    используется как есть."""
     if not piece_a.location_candidates or not piece_b.location_candidates:
         return None
-    row_a, col_a, rot_a, _ = piece_a.location_candidates[0]
-    row_b, col_b, rot_b, _ = piece_b.location_candidates[0]
+
+    row_a, col_a, rot_a, conf_a = piece_a.location_candidates[0]
+    row_b, col_b, rot_b, conf_b = piece_b.location_candidates[0]
+
+    min_confidence = float(get_config().section("locate")["color_refit_confidence_threshold"])
+    if conf_a < min_confidence or conf_b < min_confidence:
+        return None
 
     dir_a = _side_absolute_direction(side_a_idx, rot_a)
     dir_b = _side_absolute_direction(side_b_idx, rot_b)
