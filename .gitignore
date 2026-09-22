@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / client
+client/node_modules/
+client/dist/
+client/.vite/
+client/tsconfig.tsbuildinfo
+npm-debug.log*
+
+# Data & debug artifacts (generated, not versioned) — keep folder structure via .gitkeep
+data/puzzles/*
+!data/puzzles/.gitkeep
+data/debug/*
+!data/debug/.gitkeep
+debug/
+*.sqlite3
+*.db
+
+# TLS certs (generated locally, never commit private keys)
+certs/*.pem
+certs/*.key
+certs/*.crt
+certs/*.srl
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Env
+.env
+.env.*
+!.env.example

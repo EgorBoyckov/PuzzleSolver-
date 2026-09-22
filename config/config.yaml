@@ -1,0 +1,120 @@
+# PuzzleVision — единый файл порогов и весов конвейера.
+# Каждый модуль сервера читает свой раздел через app.core.config.get_config().
+# Значения в разделах, помеченных "этап N", используются начиная с соответствующего
+# этапа разработки; до этого они не влияют ни на что и служат заготовкой конфигурации.
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+  # Пути ищутся относительно корня репозитория, если не абсолютные.
+  tls_certfile: "certs/server.crt"
+  tls_keyfile: "certs/server.key"
+  data_dir: "data/puzzles"
+  debug_dir: "data/debug"
+  # Писать ли отладочные изображения (маски, углы, стороны, привязка) для каждого кадра.
+  debug_images: true
+  database_url: "sqlite:///data/puzzlevision.db"
+  cors_allow_origins: ["*"]
+
+capture:
+  # Протокол съёмки партии деталей (Этап Б технического задания).
+  batch_size_min: 60
+  batch_size_max: 120
+  table_height_cm_min: 50
+  table_height_cm_max: 70
+  min_gap_mm: 10          # минимальный зазор между деталями при раскладке
+  max_gap_mm: 15
+  min_camera_megapixels: 12
+  max_frames_total: 80
+
+aruco:
+  dictionary: "DICT_4X4_50"
+  marker_id: 0
+  marker_size_mm: 100      # сторона маркера на печатном A4-листе
+  page_size: "A4"
+
+preprocess:
+  # Порог дисперсии Лапласиана: кадры ниже отбраковываются как размытые.
+  blur_variance_threshold: 80.0
+  # Доля пересвеченных пикселей (яркость > overexposure_luma), выше — отбраковка.
+  overexposure_luma: 245
+  overexposure_fraction_threshold: 0.05
+  # Целевые серые/белые поля маркера для баланса белого.
+  white_balance_reference_patch: "aruco_border"
+  homography_output_dpi: 300
+
+segment:
+  # Заготовка порогов для этапа 1 (сегментация).
+  background_method: "color_threshold"   # color_threshold | sam2
+  area_tolerance_fraction: 0.4           # ±40% от медианной площади детали
+  cluster_area_ratio_threshold: 2.0      # маска крупнее медианы в N раз -> слипшиеся детали
+  watershed_min_distance_px: 15
+  sam2:
+    enabled: false
+    checkpoint: "models/sam2_hiera_small.pt"
+    points_per_side: 0    # 0 = использовать точки-подсказки из первого прохода, не сетку
+
+describe:
+  # Заготовка порогов для этапа 1 (описание детали).
+  corner_curvature_window: 9
+  corner_rectangularity_tolerance_deg: 20
+  side_curve_points: 96          # 64-128 точек нормализованной кривой стороны
+  color_strip_width_mm: 4.0      # 3-5 мм цветовая полоса вдоль края
+  color_strip_samples: 32
+  color_space: "Lab"
+  embedding_model: "dinov2_vits14"
+  straight_side_curvature_threshold: 0.05
+
+locate:
+  # Заготовка порогов для этапа 2 (привязка к образцу).
+  grid_cell_target_pieces: 1
+  top_k_embedding_candidates: 50
+  top_k_result_cells: 3
+  rotations_deg: [0, 90, 180, 270]
+  color_refit_confidence_threshold: 0.85
+  color_refit_min_samples: 30
+
+match:
+  # Веса функции совместимости сторон S = w1*D_shape + w2*D_color + w3*D_pos.
+  weights:
+    shape: 0.5
+    color: 0.3
+    position: 0.2
+  neighbor_cell_radius: 1        # соседние ячейки образца для отбора кандидатов
+  faiss_top_k_shape: 50          # запасной поиск по форме в однотонных зонах
+  monochrome_shape_weight_boost: 1.5
+  confidence_candidate_threshold: 0.80   # ниже — показываем 2-3 кандидата
+
+plan:
+  priority_confidence_weight: 0.7
+  priority_convenience_weight: 0.3
+  frame_first: true               # сначала рамка, потом текстурные острова, потом однотонные зоны
+
+recognize:
+  faiss_index_type: "IVFFlat"
+  fingerprint_rotation_invariant: true
+
+no_reference:
+  cluster_method: "dinov2_kmeans"
+  min_island_size: 10
+  faiss_top_k_shape: 20
+  candidates_shown: 5
+
+synth:
+  # Параметры генератора синтетического датасета (используется тестами всех этапов).
+  piece_size_mm: 25.0
+  default_aspect_ratio: [4, 3]
+  table_canvas_margin_mm: 40.0
+  background_color_bgr: [40, 34, 30]
+  lighting_gradient_strength: 0.25
+  noise_sigma: 4.0
+  jpeg_quality: 92
+  seed: 42
+  tab_shape:
+    depth_ratio: 0.24          # глубина выступа/впадины относительно размера детали
+    center_jitter: 0.06        # случайное смещение центра выступа от середины стороны
+    half_width_ratio: 0.27     # ширина "бульбы" относительно длины стороны
+    waist_w_ratio: 0.06        # ширина сужения-шейки
+    waist_depth_ratio: 0.08    # глубина сужения относительно depth_ratio
+    depth_jitter: 0.15         # случайный разброс глубины между деталями
+    side_curve_points: 64      # точек на кривую стороны в каталоге пазла

@@ -1,0 +1,184 @@
+:root {
+  --bg: #14171c;
+  --surface: #1e2229;
+  --accent: #2e78c4;
+  --accent-2: #d97e2e;
+  --text: #f2f3f5;
+  --text-dim: #9aa2ad;
+  --danger: #d64545;
+  --ok: #3fae5c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid #2a2f38;
+}
+
+.topbar__title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.badge {
+  font-size: 0.8rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #333a45;
+  color: var(--text-dim);
+}
+
+.badge--ok {
+  background: rgba(63, 174, 92, 0.18);
+  color: var(--ok);
+}
+
+.badge--error {
+  background: rgba(214, 69, 69, 0.18);
+  color: var(--danger);
+}
+
+.screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px;
+  gap: 16px;
+}
+
+.camera-frame {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  aspect-ratio: 3 / 4;
+  background: #000;
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#camera-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+#camera-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.camera-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  text-align: center;
+  color: var(--text-dim);
+  padding: 24px;
+}
+
+.level-indicator {
+  font-size: 1rem;
+  color: var(--text-dim);
+  background: var(--surface);
+  padding: 8px 16px;
+  border-radius: 999px;
+}
+
+.level-indicator--good {
+  color: var(--ok);
+}
+
+.controls {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.controls--row {
+  gap: 12px;
+}
+
+.btn {
+  border: none;
+  border-radius: 14px;
+  font-size: 1rem;
+  font-weight: 600;
+  padding: 14px 20px;
+  cursor: pointer;
+  transition: transform 0.05s ease, opacity 0.15s ease;
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn--lg {
+  font-size: 1.15rem;
+  padding: 18px 28px;
+  min-width: 220px;
+  border-radius: 18px;
+}
+
+.btn--primary {
+  background: var(--accent);
+  color: white;
+}
+
+.btn--accent {
+  background: var(--accent-2);
+  color: white;
+}
+
+.btn--secondary {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid #333a45;
+}
+
+.error-text {
+  color: var(--danger);
+  text-align: center;
+}
+
+.hint-text {
+  color: var(--text-dim);
+  text-align: center;
+}
+
+#captured-photo {
+  width: 100%;
+  max-width: 640px;
+  border-radius: 16px;
+}

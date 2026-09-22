@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#2e78c4" />
+    <meta name="description" content="PuzzleVision — помощник сборки пазлов по фото с телефона" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <title>PuzzleVision</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <span class="topbar__title">PuzzleVision</span>
+        <span id="server-status" class="badge badge--pending">проверка сервера…</span>
+      </header>
+
+      <main class="screen" id="camera-screen">
+        <div class="camera-frame">
+          <video id="camera-video" playsinline autoplay muted></video>
+          <canvas id="camera-overlay"></canvas>
+          <div id="camera-placeholder" class="camera-placeholder">
+            <p>Камера не запущена</p>
+            <button id="start-camera-btn" class="btn btn--primary btn--lg">Включить камеру</button>
+          </div>
+        </div>
+
+        <div id="level-indicator" class="level-indicator" hidden>
+          <span id="level-text">уровень: —</span>
+        </div>
+
+        <div class="controls">
+          <button id="capture-btn" class="btn btn--accent btn--lg" hidden>Снять кадр</button>
+        </div>
+
+        <p id="camera-error" class="error-text" hidden></p>
+      </main>
+
+      <section id="review-screen" class="screen" hidden>
+        <h2>Кадр снят</h2>
+        <img id="captured-photo" alt="Снятый кадр" />
+        <div class="controls controls--row">
+          <button id="retake-btn" class="btn btn--secondary btn--lg">Переснять</button>
+          <button id="upload-btn" class="btn btn--primary btn--lg">Отправить на сервер</button>
+        </div>
+        <p id="upload-status" class="hint-text"></p>
+      </section>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

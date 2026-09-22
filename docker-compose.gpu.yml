@@ -1,0 +1,22 @@
+# Оверрайд для запуска с видеокартой NVIDIA:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+# Требует установленного NVIDIA Container Toolkit на хосте:
+#   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+#
+# Само по себе не ускоряет этап 0 (тяжёлые ML-модули появляются с этапа 1) —
+# код сервера сам определяет доступность GPU (torch.cuda.is_available()) и
+# переходит на CPU, если видеокарты нет, поэтому один и тот же образ работает
+# в обеих конфигурациях без пересборки.
+services:
+  server:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
