@@ -50,6 +50,10 @@ class PieceRecord(BaseModel):
     number_in_batch: int
     kind: PieceKind | None = None
     contour_px: list[Point2D] = []
+    # 4 угла детали (координаты кадра, порядок против часовой стрелки, тот
+    # же что и sides) — заполняется describe, нужно locate для канонизации
+    # ориентации детали перед сравнением с образцом.
+    corners_px: list[Point2D] = []
     thumbnail_path: str | None = None
     sides: list[Side] = []
     embedding: list[float] | None = None

@@ -18,14 +18,14 @@ def synth_batches_dir(tmp_path_factory):
         seed=5,
     )
     meta = generate_dataset(config)
-    return out_dir / "batches", meta
+    return out_dir, meta
 
 
 def test_run_pipeline_on_folder_produces_summary_and_catalog(synth_batches_dir, tmp_path):
-    batches_dir, meta = synth_batches_dir
+    out_dir_synth, meta = synth_batches_dir
     out_dir = tmp_path / "run"
 
-    summary = run_pipeline_on_folder(batches_dir, "cli-test", out_dir)
+    summary = run_pipeline_on_folder(out_dir_synth / "batches", "cli-test", out_dir)
 
     assert summary["frames_total"] == meta["num_batches"]
     assert summary["frames_accepted"] == meta["num_batches"]
@@ -38,3 +38,25 @@ def test_run_pipeline_on_folder_produces_summary_and_catalog(synth_batches_dir, 
         pieces = json.load(f)
     assert len(pieces) == summary["pieces_found"]
     assert all(p["id"].startswith("B") for p in pieces)
+
+
+def test_run_pipeline_with_reference_fills_location_candidates(synth_batches_dir, tmp_path):
+    out_dir_synth, meta = synth_batches_dir
+    out_dir = tmp_path / "run_located"
+
+    summary = run_pipeline_on_folder(
+        out_dir_synth / "batches",
+        "cli-test-located",
+        out_dir,
+        reference_path=out_dir_synth / "catalog" / "box.jpg",
+        grid_rows=meta["rows"],
+        grid_cols=meta["cols"],
+    )
+
+    assert summary["located"] == summary["pieces_found"]
+    with (out_dir / "catalog" / "pieces.json").open(encoding="utf-8") as f:
+        pieces = json.load(f)
+    located_with_candidates = [p for p in pieces if p["location_candidates"]]
+    assert len(located_with_candidates) == summary["pieces_found"]
+    for p in located_with_candidates:
+        assert 1 <= len(p["location_candidates"]) <= 3

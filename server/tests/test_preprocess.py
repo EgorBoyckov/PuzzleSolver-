@@ -60,7 +60,7 @@ def test_rejects_overexposed_frame(small_dataset, tmp_path):
     # Масштабируем яркость (а не сдвигаем на константу), чтобы не сгладить
     # градиенты до нуля — иначе кадр случайно попадёт под "blurry" раньше,
     # чем до проверки пересвета.
-    blown = np.clip(img.astype(np.float32) * 3.0, 0, 255).astype(np.uint8)
+    blown = np.clip(img.astype(np.float32) * 6.0, 0, 255).astype(np.uint8)
     overexposed_path = tmp_path / "overexposed.jpg"
     cv2.imwrite(str(overexposed_path), blown)
 

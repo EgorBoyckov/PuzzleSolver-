@@ -25,6 +25,7 @@ import cv2
 import numpy as np
 
 from app.core.config import get_config
+from app.pipeline.embedding import compute_placeholder_embedding
 from app.pipeline.schemas import PieceKind, PieceRecord, Point2D, Side, SideKind
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,6 @@ def _rectangularity_deviation_deg(contour: np.ndarray, indices: list[int]) -> fl
 
 
 def _split_into_sides(contour: np.ndarray, corner_indices: list[int]) -> list[np.ndarray]:
-    n = len(contour)
     idxs = sorted(corner_indices)
     sides = []
     for k in range(4):
@@ -205,20 +205,6 @@ def _sample_color_strip(
     return strip
 
 
-def _placeholder_embedding(bgr_crop: np.ndarray, local_contour: np.ndarray) -> list[float]:
-    """Временный дескриптор лица детали (цвет + форма) до подключения DINOv2 на этапе 2."""
-    mask = np.zeros(bgr_crop.shape[:2], dtype=np.uint8)
-    cv2.fillPoly(mask, [local_contour.astype(np.int32)], 255)
-    lab = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2LAB)
-    hist = cv2.calcHist([lab], [0, 1, 2], mask, [8, 8, 8], [0, 256, 0, 256, 0, 256])
-    hist = cv2.normalize(hist, None).flatten()
-
-    moments = cv2.HuMoments(cv2.moments(local_contour)).flatten()
-    moments = np.sign(moments) * np.log1p(np.abs(moments) * 1e6)
-
-    return np.concatenate([hist, moments]).astype(float).tolist()
-
-
 def _save_debug_overlay(frame_bgr: np.ndarray, piece: PieceRecord, contour: np.ndarray, corner_indices: list[int], debug_dir: Path) -> None:
     x, y, w, h = cv2.boundingRect(contour.astype(np.int32))
     pad = 15
@@ -273,6 +259,8 @@ def describe_piece(
         piece.is_suspect = True
         piece.suspect_reason = piece.suspect_reason or "non_rectangular"
 
+    piece.corners_px = [Point2D(x=float(contour[i][0]), y=float(contour[i][1])) for i in corner_indices]
+
     sides_pts = _split_into_sides(contour, corner_indices)
     centroid = contour.mean(axis=0)
 
@@ -308,7 +296,7 @@ def describe_piece(
 
     piece.sides = sides
     piece.kind = _classify_piece_kind(straight_count)
-    piece.embedding = _placeholder_embedding(bgr_crop, contour - crop_offset)
+    piece.embedding = compute_placeholder_embedding(bgr_crop, contour - crop_offset)
 
     if debug_dir is not None:
         _save_debug_overlay(frame_bgr, piece, contour, corner_indices, debug_dir)
