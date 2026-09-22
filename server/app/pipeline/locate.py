@@ -171,7 +171,10 @@ def locate_piece(
         return
 
     dists = np.linalg.norm(reference_index.embeddings - piece_emb, axis=1)
-    top_k = min(int(lc["top_k_embedding_candidates"]), dists.shape[0])
+    total_cells = reference_index.rows * reference_index.cols
+    top_k_raw = round(float(lc["top_k_fraction"]) * total_cells)
+    top_k_clamped = max(int(lc["top_k_min"]), min(int(lc["top_k_max"]), top_k_raw))
+    top_k = min(top_k_clamped, dists.shape[0])
     candidate_idx = np.argsort(dists)[:top_k]
     cand_dist_min, cand_dist_max = float(dists[candidate_idx].min()), float(dists[candidate_idx].max())
     cand_dist_range = max(cand_dist_max - cand_dist_min, 1e-9)
