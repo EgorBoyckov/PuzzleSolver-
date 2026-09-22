@@ -20,6 +20,8 @@ from app.core.config import get_config
 from app.core.logging import setup_logging
 from app.pipeline.describe import describe_piece
 from app.pipeline.locate import ReferenceGridIndex, build_reference_index, locate_piece, refit_reference_colors
+from app.pipeline.match import build_edge_matches
+from app.pipeline.plan import next_steps_with_catalog
 from app.pipeline.preprocess import preprocess_frame
 from app.pipeline.schemas import PieceKind
 from app.pipeline.segment import segment_pieces
@@ -36,6 +38,8 @@ def run_pipeline_on_folder(
     reference_path: Path | None = None,
     grid_rows: int | None = None,
     grid_cols: int | None = None,
+    skip_match: bool = False,
+    max_steps: int = 10000,
 ) -> dict:
     debug_dir = out_dir / "debug"
     catalog_dir = out_dir / "catalog"
@@ -119,6 +123,15 @@ def run_pipeline_on_folder(
     for p in all_pieces:
         kind_counts[p.kind.value if p.kind else "unknown"] += 1
 
+    edges_count = steps_count = None
+    if not skip_match and len(all_pieces) >= 2:
+        edges = build_edge_matches(all_pieces)
+        steps = next_steps_with_catalog(edges, all_pieces, max_steps=max_steps)
+        edges_count, steps_count = len(edges), len(steps)
+        with (catalog_dir / "steps.json").open("w", encoding="utf-8") as f:
+            json.dump([s.model_dump() for s in steps], f, ensure_ascii=False, indent=2)
+        logger.info("match+plan: %d кандидатов-рёбер, %d шагов сборки", edges_count, steps_count)
+
     summary = {
         "puzzle_id": puzzle_id,
         "frames_total": len(photos),
@@ -128,6 +141,8 @@ def run_pipeline_on_folder(
         "pieces_suspect": sum(1 for p in all_pieces if p.is_suspect),
         "kind_counts": kind_counts,
         "located": sum(1 for p in all_pieces if p.location_candidates) if ref_index is not None else None,
+        "edge_matches": edges_count,
+        "assembly_steps": steps_count,
         "frames": frames_report,
     }
 
@@ -148,6 +163,8 @@ def main() -> None:
     parser.add_argument("--reference", type=str, default=None, help="Фото коробки — если задано, запускается locate")
     parser.add_argument("--grid-rows", type=int, default=None, help="Число строк сетки образца")
     parser.add_argument("--grid-cols", type=int, default=None, help="Число столбцов сетки образца")
+    parser.add_argument("--skip-match", action="store_true", help="Не считать сопоставление сторон и план сборки")
+    parser.add_argument("--max-steps", type=int, default=10000, help="Максимум шагов сборки в плане")
     args = parser.parse_args()
 
     summary = run_pipeline_on_folder(
@@ -157,6 +174,8 @@ def main() -> None:
         reference_path=Path(args.reference) if args.reference else None,
         grid_rows=args.grid_rows,
         grid_cols=args.grid_cols,
+        skip_match=args.skip_match,
+        max_steps=args.max_steps,
     )
     logger.info("Готово: %s", json.dumps(summary, ensure_ascii=False))
 

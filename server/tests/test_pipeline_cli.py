@@ -60,3 +60,24 @@ def test_run_pipeline_with_reference_fills_location_candidates(synth_batches_dir
     assert len(located_with_candidates) == summary["pieces_found"]
     for p in located_with_candidates:
         assert 1 <= len(p["location_candidates"]) <= 3
+
+    assert summary["edge_matches"] is not None
+    assert summary["assembly_steps"] is not None
+    assert (out_dir / "catalog" / "steps.json").exists()
+    with (out_dir / "catalog" / "steps.json").open(encoding="utf-8") as f:
+        steps = json.load(f)
+    assert len(steps) == summary["assembly_steps"]
+    for s in steps:
+        assert s["rotation_deg"] in (0, 90, 180, 270)
+        assert 0.0 <= s["confidence"] <= 1.0
+
+
+def test_run_pipeline_skip_match_omits_steps(synth_batches_dir, tmp_path):
+    out_dir_synth, _meta = synth_batches_dir
+    out_dir = tmp_path / "run_skip_match"
+
+    summary = run_pipeline_on_folder(out_dir_synth / "batches", "cli-test-skip", out_dir, skip_match=True)
+
+    assert summary["edge_matches"] is None
+    assert summary["assembly_steps"] is None
+    assert not (out_dir / "catalog" / "steps.json").exists()
