@@ -118,7 +118,7 @@ describe:
   straight_side_deviation_ratio: 0.06
 
 locate:
-  top_k_embedding_candidates: 50
+  top_k_embedding_candidates: 150
   top_k_result_cells: 3
   rotations_deg: [0, 90, 180, 270]
   color_refit_confidence_threshold: 0.85
