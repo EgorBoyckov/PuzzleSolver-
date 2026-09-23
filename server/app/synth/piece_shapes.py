@@ -110,6 +110,46 @@ def _bump_profile(
     return main - left_waist - right_waist
 
 
+def _cubic_bezier(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray, p3: np.ndarray, n: int, include_start: bool) -> np.ndarray:
+    t = np.linspace(0.0, 1.0, n + 1)[:, None]
+    if not include_start:
+        t = t[1:]
+    return (1 - t) ** 3 * p0 + 3 * (1 - t) ** 2 * t * p1 + 3 * (1 - t) * t**2 * p2 + t**3 * p3
+
+
+def _classic_knob_curve(length: float, n_points: int, rng: np.random.Generator, tab_size: float, jitter: float) -> np.ndarray:
+    """Классический «грибовидный» замок: узкая шейка и круглая головка шире
+    шейки (с поднутрением — кривая НЕ является функцией y(x)), как у
+    настоящих вырубных пазлов. Три кубических сплайна Безье по 10 опорным
+    точкам (известная схема процедурных генераторов пазлов): t — размер
+    замка (доля стороны), случайные a..e — индивидуальная асимметрия ребра
+    (сдвиг головки вдоль стороны, наклон шейки, лёгкая волна у углов).
+
+    Возвращает (N, 2): x вдоль ребра [0, length], y — смещение (головка
+    в сторону +y)."""
+    t = tab_size
+    a, b, c, d, e = (rng.uniform(-jitter, jitter) for _ in range(5))
+    pts = np.array(
+        [
+            [0.0, 0.0],
+            [0.2, a],
+            [0.5 + b + d, -t + c],
+            [0.5 - t + b, t + c],
+            [0.5 - 2.0 * t + b - d, 3.0 * t + c],
+            [0.5 + 2.0 * t + b - d, 3.0 * t + c],
+            [0.5 + t + b, t + c],
+            [0.5 + b + d, -t + c],
+            [0.8, e],
+            [1.0, 0.0],
+        ]
+    ) * length
+    per_seg = max(8, n_points // 3)
+    seg1 = _cubic_bezier(pts[0], pts[1], pts[2], pts[3], per_seg, include_start=True)
+    seg2 = _cubic_bezier(pts[3], pts[4], pts[5], pts[6], per_seg, include_start=False)
+    seg3 = _cubic_bezier(pts[6], pts[7], pts[8], pts[9], per_seg, include_start=False)
+    return np.concatenate([seg1, seg2, seg3], axis=0)
+
+
 def _generate_edge_curve(
     length: float,
     n_points: int,
@@ -122,6 +162,11 @@ def _generate_edge_curve(
         u = np.array([0.0, length])
         v = np.array([0.0, 0.0])
         return np.stack([u, v], axis=1)
+
+    if tab_params.get("style", "classic") == "classic":
+        curve = _classic_knob_curve(length, n_points, rng, tab_params["tab_size"], tab_params["jitter"])
+        curve[:, 1] *= bulge_sign
+        return curve
 
     u = np.linspace(0.0, length, n_points)
     profile = _bump_profile(
@@ -140,13 +185,18 @@ def _generate_edge_curve(
 
 
 DEFAULT_TAB_PARAMS = {
+    # "classic" — грибовидный замок с шейкой (как у настоящих пазлов);
+    # "bump" — прежний гладкий горб без шейки (оставлен для сравнения).
+    "style": "classic",
+    "tab_size": 0.1,
+    "jitter": 0.035,
     "depth_ratio": 0.22,
     "center_jitter": 0.06,
     "half_width_ratio": 0.24,
     "waist_w_ratio": 0.05,
     "waist_depth_ratio": 0.0,
     "depth_jitter": 0.15,
-    "side_curve_points": 64,
+    "side_curve_points": 96,
 }
 
 

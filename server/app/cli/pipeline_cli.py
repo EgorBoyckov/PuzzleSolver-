@@ -1,5 +1,11 @@
-"""CLI для прогона конвейера (preprocess -> segment -> describe [-> locate])
-на папке с фото партий, без веб-клиента.
+"""CLI для прогона конвейера (preprocess -> segment -> describe [-> locate ->
+solve]) на папке с фото партий, без веб-клиента.
+
+С образцом (--reference) после каталогизации всех партий детали
+привязываются к картинке коробки (locate) и раскладываются по сетке
+глобальной сборкой (solve): результат — catalog/layout.json (для каждой
+ячейки: деталь, поворот, уверенность) и debug/assembled.jpg (картинка,
+собранная из самих деталей — ошибки видны глазом).
 
 Примеры:
     python -m app.cli.pipeline_cli --input path/to/batch_photos --puzzle-id demo --out data/debug/pipeline_run
@@ -14,15 +20,14 @@ import logging
 from pathlib import Path
 
 import cv2
-import numpy as np
 
-from app.core.config import get_config
 from app.core.logging import setup_logging
 from app.pipeline.describe import describe_piece
-from app.pipeline.locate import ReferenceGridIndex, build_reference_index, locate_piece, refit_reference_colors
+from app.pipeline.locate import PieceAppearance, ReferenceGridIndex, build_reference_index, locate_appearances, piece_appearance, render_layout
 from app.pipeline.preprocess import preprocess_frame
 from app.pipeline.schemas import PieceKind
 from app.pipeline.segment import segment_pieces
+from app.pipeline.solve import solve_layout
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +52,10 @@ def run_pipeline_on_folder(
         raise FileNotFoundError(f"В папке {input_dir} не найдено изображений ({IMAGE_EXTENSIONS})")
 
     ref_index: ReferenceGridIndex | None = None
-    frame_lookup: dict[int, np.ndarray] = {}
+    # Признаки для locate считаются сразу по кадру партии — кадры целиком в
+    # памяти не держим (на 5000 деталях это полтора гигабайта).
+    located_pieces = []
+    appearances: list[PieceAppearance] = []
     if reference_path is not None:
         if not (grid_rows and grid_cols):
             raise ValueError("--reference требует --grid-rows и --grid-cols")
@@ -84,35 +92,36 @@ def run_pipeline_on_folder(
         for piece in pieces:
             describe_piece(piece, rectified, frame.mm_per_pixel, debug_dir=debug_dir / "describe")
             if ref_index is not None:
-                locate_piece(piece, rectified, ref_index)
-
-        if ref_index is not None:
-            frame_lookup[batch_number] = rectified
+                app = piece_appearance(piece, rectified, ref_index)
+                if app is not None:
+                    located_pieces.append(piece)
+                    appearances.append(app)
 
         all_pieces.extend(pieces)
         logger.info("batch %d (%s): %d деталей", batch_number, photo_path.name, len(pieces))
 
-    if ref_index is not None and all_pieces:
-        lc = get_config().section("locate")
-        refitted = refit_reference_colors(
-            ref_index,
-            all_pieces,
-            frame_lookup,
-            confidence_threshold=lc["color_refit_confidence_threshold"],
-            min_samples=lc["color_refit_min_samples"],
-        )
-        if refitted is not None:
-            ref_index = refitted
-            low_confidence = [
-                p
-                for p in all_pieces
-                if not p.location_candidates or p.location_candidates[0][3] < lc["color_refit_confidence_threshold"]
-            ]
-            logger.info("locate: повторный поиск после цветокоррекции для %d деталей", len(low_confidence))
-            for piece in low_confidence:
-                rectified = frame_lookup.get(piece.batch_number)
-                if rectified is not None:
-                    locate_piece(piece, rectified, ref_index)
+    layout_summary = None
+    if ref_index is not None and appearances:
+        located = locate_appearances(located_pieces, appearances, ref_index)
+        layout = solve_layout(located)
+        grid = [[None] * ref_index.cols for _ in range(ref_index.rows)]
+        for pl in layout.placements:
+            piece = located.pieces[pl.piece_index]
+            grid[pl.row][pl.col] = {
+                "piece_id": piece.id,
+                "rotation_deg": pl.rotation * 90,
+                "confidence": round(pl.confidence, 4),
+                "source": pl.source,
+            }
+        with (catalog_dir / "layout.json").open("w", encoding="utf-8") as f:
+            json.dump({"rows": ref_index.rows, "cols": ref_index.cols, "cells": grid}, f, ensure_ascii=False, indent=1)
+        cv2.imwrite(str(debug_dir / "assembled.jpg"), render_layout(located, layout.placements))
+        sources = [pl.source for pl in layout.placements]
+        layout_summary = {
+            "cells": ref_index.rows * ref_index.cols,
+            "placed": len(layout.placements),
+            "by_source": {src: sources.count(src) for src in ("anchor", "growth", "fallback")},
+        }
 
     kind_counts = {k.value: 0 for k in PieceKind}
     kind_counts["unknown"] = 0
@@ -128,6 +137,7 @@ def run_pipeline_on_folder(
         "pieces_suspect": sum(1 for p in all_pieces if p.is_suspect),
         "kind_counts": kind_counts,
         "located": sum(1 for p in all_pieces if p.location_candidates) if ref_index is not None else None,
+        "layout": layout_summary,
         "frames": frames_report,
     }
 
@@ -145,7 +155,7 @@ def main() -> None:
     parser.add_argument("--input", type=str, required=True, help="Папка с фото партий (jpg/png)")
     parser.add_argument("--puzzle-id", type=str, default="cli-run", help="ID пазла (для нумерации деталей)")
     parser.add_argument("--out", type=str, required=True, help="Папка вывода (каталог + отладочные изображения)")
-    parser.add_argument("--reference", type=str, default=None, help="Фото коробки — если задано, запускается locate")
+    parser.add_argument("--reference", type=str, default=None, help="Фото коробки — если задано, запускаются locate и глобальная сборка")
     parser.add_argument("--grid-rows", type=int, default=None, help="Число строк сетки образца")
     parser.add_argument("--grid-cols", type=int, default=None, help="Число столбцов сетки образца")
     args = parser.parse_args()

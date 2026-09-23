@@ -80,10 +80,12 @@ def _build_piece_patch(
     piece: PieceGeometry,
     box_art: np.ndarray,
     box_px_per_mm: float,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Вырезать RGBA-патч детали (rotation=0) из картинки коробки.
 
-    Возвращает (patch_bgr, mask_uint8) в разрешении box_px_per_mm.
+    Возвращает (patch_bgr, mask_uint8, origin_offset_px) в разрешении
+    box_px_per_mm; origin_offset_px — положение начала local_contour() в
+    пикселях патча (патч начинается с целого пикселя, контур — нет).
     """
     xmin, ymin, xmax, ymax = piece.bbox
     x0 = max(0, int(math.floor(xmin * box_px_per_mm)))
@@ -93,9 +95,10 @@ def _build_piece_patch(
     x1, y1 = max(x1, x0 + 1), max(y1, y0 + 1)
     patch = box_art[y0:y1, x0:x1].copy()
 
-    local_px = (piece.local_contour()) * box_px_per_mm
+    offset = np.array([xmin * box_px_per_mm - x0, ymin * box_px_per_mm - y0])
+    local_px = piece.local_contour() * box_px_per_mm + offset
     mask = _rasterize_mask(local_px, (patch.shape[0], patch.shape[1]))
-    return patch, mask
+    return patch, mask, offset
 
 
 def _rotate_rgba(rgba: np.ndarray, contour_px: np.ndarray, angle_deg: float) -> tuple[np.ndarray, np.ndarray]:
@@ -331,14 +334,21 @@ def render_batch(
     radii = []
     for row, col in piece_keys:
         piece = grid.piece(row, col)
-        patch_bgr, mask = _build_piece_patch(piece, box_art, box_px_per_mm)
-        rgba = np.dstack([patch_bgr, mask])
+        patch_bgr, _mask, offset = _build_piece_patch(piece, box_art, box_px_per_mm)
 
         s = config.table_px_per_mm / box_px_per_mm
-        w0 = max(1, int(round(rgba.shape[1] * s)))
-        h0 = max(1, int(round(rgba.shape[0] * s)))
-        rgba_scaled = cv2.resize(rgba, (w0, h0), interpolation=cv2.INTER_AREA)
-        scaled_contour = (piece.local_contour()) * config.table_px_per_mm
+        w0 = max(1, int(round(patch_bgr.shape[1] * s)))
+        h0 = max(1, int(round(patch_bgr.shape[0] * s)))
+        bgr_scaled = cv2.resize(patch_bgr, (w0, h0), interpolation=cv2.INTER_LINEAR)
+        scaled_contour = (piece.local_contour() * box_px_per_mm + offset) * s
+        # Маска растеризуется сразу в разрешении стола (субпиксельно, со
+        # сглаживанием), а не растягивается из разрешения коробки: у
+        # настоящей детали на фото чёткий край, а растянутая маска с
+        # коробки (2-3 px/мм) даёт «лесенку» ~0.3-0.5 мм — это шум того же
+        # порядка, что и различия форм замков у соседних деталей.
+        mask_scaled = np.zeros((h0, w0), dtype=np.uint8)
+        cv2.fillPoly(mask_scaled, [np.round(scaled_contour * 16).astype(np.int32)], 255, lineType=cv2.LINE_AA, shift=4)
+        rgba_scaled = np.dstack([bgr_scaled, mask_scaled])
 
         angle_deg = float(rng.uniform(0, 360))
         rotated_rgba, rotated_contour = _rotate_rgba(rgba_scaled, scaled_contour, angle_deg)

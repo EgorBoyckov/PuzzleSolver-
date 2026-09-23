@@ -60,3 +60,10 @@ def test_run_pipeline_with_reference_fills_location_candidates(synth_batches_dir
     assert len(located_with_candidates) == summary["pieces_found"]
     for p in located_with_candidates:
         assert 1 <= len(p["location_candidates"]) <= 3
+    assert summary["layout"]["placed"] == summary["pieces_found"]
+    assert (out_dir / "debug" / "assembled.jpg").exists()
+    with (out_dir / "catalog" / "layout.json").open(encoding="utf-8") as f:
+        layout = json.load(f)
+    placed_ids = [cell["piece_id"] for row in layout["cells"] for cell in row if cell]
+    assert len(placed_ids) == len(set(placed_ids)) == summary["pieces_found"]
+    assert all(p["placement"] is not None for p in pieces)

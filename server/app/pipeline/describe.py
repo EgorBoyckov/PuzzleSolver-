@@ -1,10 +1,9 @@
 """Модуль 3: описание детали — углы, стороны, форма, цвет, эмбеддинг.
 
-Углы ищутся как топ-4 самых острых вершины выпуклой оболочки контура (см.
-docstring _find_corners): выступ выпуклый и добавляет на оболочку пологую
-вершину, впадина вогнутая и на оболочку не попадает, поэтому настоящие
-90°-углы детали резко острее любой другой вершины оболочки — устойчиво даже
-при сильно несимметричных выступах/впадинах на разных сторонах. Контур
+Углы ищутся как точки, из которых контур уходит двумя прямыми «плечами» под
+~90°, с перебором четвёрок кандидатов на согласованный прямоугольник (см.
+docstring _find_corners) — острота вершины оболочки не годится: вершина
+головки замка бывает острее настоящего угла. Контур
 делится на 4 стороны по найденным углам; тип стороны — по максимальному
 отклонению от прямой линии между её концами (порог
 config.describe.straight_side_deviation_ratio), знак отклонения (наружу/
@@ -18,6 +17,7 @@ Lab + Hu-моменты формы), а не DINOv2: настоящая моде
 """
 from __future__ import annotations
 
+import itertools
 import logging
 from pathlib import Path
 
@@ -45,62 +45,139 @@ def _classify_piece_kind(straight_count: int) -> PieceKind:
     return PieceKind.CENTER
 
 
-def _find_corners(contour: np.ndarray, ds: dict) -> list[int] | None:
-    """Топ-4 самых острых вершины выпуклой оболочки контура.
+def _resample_closed(contour: np.ndarray, n: int) -> tuple[np.ndarray, float]:
+    pts = np.vstack([contour, contour[:1]])
+    seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    t = np.linspace(0.0, cum[-1], n, endpoint=False)
+    return np.stack([np.interp(t, cum, pts[:, 0]), np.interp(t, cum, pts[:, 1])], axis=1), float(cum[-1])
 
-    Раньше углы искались привязкой к 4 точкам cv2.minAreaRect (смещается на
-    несимметричных выступах) и затем скан по всему контуру (иногда цеплялся
-    за точку на пологой дуге выступа, где локальное окно кривизны случайно
-    давало сравнимый с углом счёт). Выпуклая оболочка устойчивее по
-    построению: выступ — выпуклая деталь контура и добавляет свою вершину на
-    оболочку, но эта вершина пологая (тупой угол поворота); впадина вогнутая
-    и вообще не попадает на оболочку. Настоящие 90°-углы детали дают резко
-    более острый поворот, чем вершина на пике любого выступа — поэтому топ-4
-    самых острых вершин оболочки почти всегда и есть 4 угла детали.
+
+def _arm_directions(pts: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Для каждой точки замкнутого равномерного контура — направление и
+    непрямолинейность (RMS отклонения от прямой) «плеча» из k следующих
+    (вперёд) и k предыдущих (назад) точек. Направления — от точки наружу."""
+    n = len(pts)
+    offsets = np.arange(0, k + 1)
+    result = []
+    for sign in (+1, -1):
+        idx = (np.arange(n)[:, None] + sign * offsets[None, :]) % n
+        arms = pts[idx]                                   # (n, k+1, 2)
+        centered = arms - arms.mean(axis=1, keepdims=True)
+        cov = np.einsum("nki,nkj->nij", centered, centered) / (k + 1)
+        evals, evecs = np.linalg.eigh(cov)                 # по возрастанию
+        d = evecs[:, :, 1]
+        flip = np.einsum("ni,ni->n", arms[:, -1] - arms[:, 0], d) < 0
+        d[flip] *= -1
+        result += [d, np.sqrt(np.clip(evals[:, 0], 0.0, None))]
+    return result[0], result[1], result[2], result[3]
+
+
+def _find_corners(contour: np.ndarray, ds: dict) -> tuple[list[int], np.ndarray] | None:
+    """4 угла детали: индексы в контуре + уточнённые субпиксельные координаты.
+
+    Прежний способ (4 самых острых вершины выпуклой оболочки) систематически
+    ошибался: если у угла обе соседние стороны с выступами, оболочка обходит
+    его по касательным к головкам замков, и вершина головки на оболочке
+    оказывается острее настоящего угла — на синтетике 2000 деталей все 4
+    угла были верны лишь у ~26% деталей. Хуже того, 4 вершины головок у
+    детали с четырьмя выступами образуют почти идеальный квадрат того же
+    размера, так что проверка «прямоугольности» такую ошибку не ловит.
+
+    Настоящий угол отличается не остротой, а тем, что из него контур уходит
+    двумя ПРЯМЫМИ отрезками под ~90° (вершина головки — дуга). Поэтому:
+      1. контур равномерно передискретизируется; для каждой точки
+         подгоняются прямые к «плечам» длиной arm_fraction·L вперёд/назад
+         (L = sqrt(площади) — оценка стороны);
+      2. кандидаты — локальные минимумы штрафа (|угол-90°|, кривизна плеч,
+         выпуклость);
+      3. из кандидатов перебором выбирается четвёрка, образующая
+         прямоугольник с равными противоположными сторонами, площадью как у
+         детали и — главное — с плечами, направленными ВДОЛЬ сторон
+         четырёхугольника (у «ромба» из головок замков касательная в
+         вершине головки идёт под 45° к его сторонам);
+      4. каждый угол уточняется пересечением прямых обоих плеч — это
+         компенсирует скругление углов (морфология сегментации, реальные
+         вырубные углы тоже слегка скруглены).
     """
-    n = len(contour)
-    if n < 16:
+    if len(contour) < 16:
         return None
-
-    contour32 = contour.astype(np.float32)
-    hull_idx = cv2.convexHull(contour32, returnPoints=False)
-    if hull_idx is None or len(hull_idx) < 4:
+    area = abs(cv2.contourArea(contour.astype(np.float32)))
+    if area <= 1.0:
         return None
-    hull_idx = sorted(int(i) for i in hull_idx.flatten())
+    side_est = float(np.sqrt(area))
+    n = int(ds["corner_resample_points"])
+    pts, perimeter = _resample_closed(contour, n)
+    step = perimeter / n
+    k = max(3, int(round(float(ds["corner_arm_fraction"]) * side_est / step)))
 
-    # JPEG-артефакты/шум сегментации дают на оболочке множество мелких
-    # ложных вершин (однопиксельные зазубрины), среди которых острый угол
-    # поворота может случайно оказаться выше, чем у настоящего угла детали.
-    # approxPolyDP по точкам оболочки схлопывает такой шум, сохраняя крупные
-    # геометрические особенности (настоящие углы и пики выступов, десятки px).
-    hull_points = contour32[hull_idx].reshape(-1, 1, 2)
-    perimeter = cv2.arcLength(contour32, True)
-    epsilon = ds["corner_hull_approx_epsilon_fraction"] * perimeter
-    approx = cv2.approxPolyDP(hull_points, epsilon, True).reshape(-1, 2)
-    if len(approx) < 4:
+    fwd, rms_f, bwd, rms_b = _arm_directions(pts, k)
+    angle = np.degrees(np.arccos(np.clip(np.einsum("ni,ni->n", fwd, bwd), -1.0, 1.0)))
+    orient = np.sign(cv2.contourArea(pts.astype(np.float32), oriented=True)) or 1.0
+    cross = bwd[:, 0] * fwd[:, 1] - bwd[:, 1] * fwd[:, 0]
+    convex = np.sign(cross) == -orient
+    straightness = (rms_f + rms_b) / (0.02 * side_est)
+    point_score = ((angle - 90.0) / 12.0) ** 2 + straightness**2 + np.where(convex, 0.0, 50.0)
+
+    min_sep = 0.8 * k
+    candidates: list[int] = []
+    for i in np.argsort(point_score):
+        if len(candidates) >= int(ds["corner_max_candidates"]):
+            break
+        if all(min(abs(int(i) - j), n - abs(int(i) - j)) > min_sep for j in candidates):
+            candidates.append(int(i))
+    if len(candidates) < 4:
         return None
+    cand = np.array(sorted(candidates))
 
-    m = len(approx)
-    scored: list[tuple[float, int]] = []
-    for k in range(m):
-        p_prev, p_cur, p_next = approx[(k - 1) % m], approx[k], approx[(k + 1) % m]
-        v1, v2 = p_prev - p_cur, p_next - p_cur
-        cos_a = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-9)
-        angle = np.degrees(np.arccos(np.clip(cos_a, -1.0, 1.0)))
-        nearest_contour_idx = int(np.argmin(np.linalg.norm(contour32 - p_cur, axis=1)))
-        scored.append((180.0 - angle, nearest_contour_idx))
+    combos = np.array(list(itertools.combinations(range(len(cand)), 4)))
+    ids = cand[combos]                                    # (m, 4), по ходу контура
+    q = pts[ids]                                          # (m, 4, 2)
+    e = np.roll(q, -1, axis=1) - q
+    sl = np.linalg.norm(e, axis=2) + 1e-9
+    eu = e / sl[:, :, None]
+    prev = -np.roll(eu, 1, axis=1)
+    q_angle = np.degrees(np.arccos(np.clip(np.sum(eu * prev, axis=2), -1.0, 1.0)))
+    s_angle = np.sum(((q_angle - 90.0) / 8.0) ** 2, axis=1)
+    mean_len = sl.mean(axis=1)
+    s_len = (((sl[:, 0] - sl[:, 2]) / mean_len / 0.08) ** 2 + ((sl[:, 1] - sl[:, 3]) / mean_len / 0.08) ** 2)
+    s_aspect = (np.log((sl[:, 0] + sl[:, 2]) / (sl[:, 1] + sl[:, 3])) / 0.35) ** 2
+    arm_f = np.degrees(np.arccos(np.clip(np.sum(fwd[ids] * eu, axis=2), -1.0, 1.0)))
+    arm_b = np.degrees(np.arccos(np.clip(np.sum(bwd[ids] * prev, axis=2), -1.0, 1.0)))
+    s_arm = np.sum((arm_f / 10.0) ** 2 + (arm_b / 10.0) ** 2, axis=1)
+    quad_area = 0.5 * np.abs(np.sum(q[:, :, 0] * np.roll(q[:, :, 1], -1, axis=1) - np.roll(q[:, :, 0], -1, axis=1) * q[:, :, 1], axis=1))
+    s_area = (np.log(np.maximum(quad_area, 1e-9) / area) / 0.25) ** 2
+    total = s_angle + s_len + s_aspect + s_arm + s_area + point_score[ids].sum(axis=1)
+    best = ids[int(np.argmin(total))]
 
-    if len(scored) < 4:
+    refined = []
+    inner = np.arange(max(1, k // 4), k + 1)
+    for i in best:
+        lines = []
+        for sign in (+1, -1):
+            arm = pts[(i + sign * inner) % n]
+            c = arm.mean(axis=0)
+            _, _, vt = np.linalg.svd(arm - c, full_matrices=False)
+            lines.append((c, vt[0]))
+        (c1, d1), (c2, d2) = lines
+        system = np.array([d1, -d2]).T
+        point = pts[i]
+        if abs(np.linalg.det(system)) > 1e-6:
+            t = np.linalg.solve(system, c2 - c1)
+            candidate = c1 + t[0] * d1
+            if np.linalg.norm(candidate - pts[i]) < 0.1 * side_est:
+                point = candidate
+        refined.append(point)
+
+    contour_idx = [int(np.argmin(np.linalg.norm(contour - pts[i], axis=1))) for i in best]
+    order = np.argsort(contour_idx)
+    contour_idx = [contour_idx[j] for j in order]
+    if len(set(contour_idx)) != 4:
         return None
-    scored.sort(key=lambda t: -t[0])
-    top4_idx = sorted(i for _, i in scored[:4])
-    if len(set(top4_idx)) != 4:
-        return None
-    return top4_idx
+    return contour_idx, np.array([refined[j] for j in order])
 
 
-def _rectangularity_deviation_deg(contour: np.ndarray, indices: list[int]) -> float:
-    pts = contour[indices]
+def _rectangularity_deviation_deg(pts: np.ndarray) -> float:
     max_dev = 0.0
     for i in range(4):
         p_prev, p, p_next = pts[(i - 1) % 4], pts[i], pts[(i + 1) % 4]
@@ -248,18 +325,28 @@ def describe_piece(
         piece.suspect_reason = piece.suspect_reason or "contour_too_small"
         return piece
 
-    corner_indices = _find_corners(contour, ds)
-    if corner_indices is None:
+    # Единая ориентация обхода контура для всех деталей (знак ориентированной
+    # площади OpenCV < 0): от неё зависит, в каком порядке идут углы/стороны,
+    # и то, что у двух соседних деталей общая линия разреза проходится в
+    # противоположных направлениях — на этом строятся locate (поворот) и
+    # сравнение формы сторон в match.
+    if cv2.contourArea(contour.astype(np.float32), oriented=True) > 0:
+        contour = contour[::-1].copy()
+        piece.contour_px = [Point2D(x=float(x), y=float(y)) for x, y in contour]
+
+    found = _find_corners(contour, ds)
+    if found is None:
         piece.is_suspect = True
         piece.suspect_reason = piece.suspect_reason or "corner_detection_failed"
         logger.warning("describe: не удалось найти 4 угла для %s", piece.id)
         return piece
 
-    if _rectangularity_deviation_deg(contour, corner_indices) > ds["corner_rectangularity_tolerance_deg"]:
+    corner_indices, corner_points = found
+    if _rectangularity_deviation_deg(corner_points) > ds["corner_rectangularity_tolerance_deg"]:
         piece.is_suspect = True
         piece.suspect_reason = piece.suspect_reason or "non_rectangular"
 
-    piece.corners_px = [Point2D(x=float(contour[i][0]), y=float(contour[i][1])) for i in corner_indices]
+    piece.corners_px = [Point2D(x=float(x), y=float(y)) for x, y in corner_points]
 
     sides_pts = _split_into_sides(contour, corner_indices)
     centroid = contour.mean(axis=0)
