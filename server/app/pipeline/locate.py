@@ -232,6 +232,40 @@ def piece_appearance(piece: PieceRecord, frame_bgr: np.ndarray, index: Reference
     )
 
 
+def save_appearances(path, apps: list[PieceAppearance]) -> None:
+    """Сохранить признаки деталей (например, одной партии) в .npz — чтобы
+    пересчёт привязки не перечитывал кадры всех партий с диска."""
+    if not apps:
+        return
+    np.savez_compressed(
+        path,
+        ids=np.array([a.piece_id for a in apps]),
+        batch=np.array([a.batch_number for a in apps]),
+        center=np.array([a.center_px for a in apps]),
+        frame_shape=np.array([a.frame_shape for a in apps]),
+        feat=np.array([a.feat_bgr for a in apps]),
+        weight=np.array([a.weight for a in apps]),
+        straight=np.array([a.straight for a in apps]),
+        preview=np.array([a.preview for a in apps]),
+    )
+
+
+def load_appearances(path) -> list[PieceAppearance]:
+    data = np.load(path)
+    return [
+        PieceAppearance(
+            piece_id=str(data["ids"][i]),
+            batch_number=int(data["batch"][i]),
+            center_px=data["center"][i],
+            frame_shape=tuple(int(v) for v in data["frame_shape"][i]),
+            feat_bgr=data["feat"][i],
+            weight=data["weight"][i],
+            straight=data["straight"][i],
+            preview=data["preview"][i],
+        )
+        for i in range(len(data["ids"]))
+    ]
+
 def _bgr_to_lab(feat_bgr: np.ndarray) -> np.ndarray:
     """(..., 3) BGR 0..255 float -> Lab в шкале uint8-OpenCV (L 0..255, a/b со сдвигом 0)."""
     shape = feat_bgr.shape

@@ -67,3 +67,46 @@ def test_run_pipeline_with_reference_fills_location_candidates(synth_batches_dir
     placed_ids = [cell["piece_id"] for row in layout["cells"] for cell in row if cell]
     assert len(placed_ids) == len(set(placed_ids)) == summary["pieces_found"]
     assert all(p["placement"] is not None for p in pieces)
+
+    assert summary["edge_matches"] is not None
+    assert summary["assembly_steps"] is not None
+    assert (out_dir / "catalog" / "steps.json").exists()
+    with (out_dir / "catalog" / "steps.json").open(encoding="utf-8") as f:
+        steps = json.load(f)
+    assert len(steps) == summary["assembly_steps"]
+    for s in steps:
+        assert s["rotation_deg"] in (0, 90, 180, 270)
+        assert 0.0 <= s["confidence"] <= 1.0
+
+
+def test_run_pipeline_skip_match_omits_steps(synth_batches_dir, tmp_path):
+    out_dir_synth, _meta = synth_batches_dir
+    out_dir = tmp_path / "run_skip_match"
+
+    summary = run_pipeline_on_folder(out_dir_synth / "batches", "cli-test-skip", out_dir, skip_match=True)
+
+    assert summary["edge_matches"] is None
+    assert summary["assembly_steps"] is None
+    assert not (out_dir / "catalog" / "steps.json").exists()
+
+
+def test_run_pipeline_without_reference_produces_frame_chain_and_islands(synth_batches_dir, tmp_path):
+    out_dir_synth, _meta = synth_batches_dir
+    out_dir = tmp_path / "run_no_reference"
+
+    summary = run_pipeline_on_folder(out_dir_synth / "batches", "cli-test-noref", out_dir)
+
+    assert summary["edge_matches"] is None
+    assert summary["assembly_steps"] is None
+    assert summary["frame_chain_length"] is not None
+    assert summary["island_count"] is not None
+    assert (out_dir / "catalog" / "frame_chain.json").exists()
+    assert (out_dir / "catalog" / "islands.json").exists()
+
+    with (out_dir / "catalog" / "frame_chain.json").open(encoding="utf-8") as f:
+        chain = json.load(f)
+    assert len(chain) == summary["frame_chain_length"]
+
+    with (out_dir / "catalog" / "islands.json").open(encoding="utf-8") as f:
+        islands = json.load(f)
+    assert len(islands) == summary["island_count"]

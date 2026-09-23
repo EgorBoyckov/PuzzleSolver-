@@ -1,11 +1,13 @@
 """CLI для прогона конвейера (preprocess -> segment -> describe [-> locate ->
-solve]) на папке с фото партий, без веб-клиента.
+solve -> match -> plan]) на папке с фото партий, без веб-клиента.
 
 С образцом (--reference) после каталогизации всех партий детали
 привязываются к картинке коробки (locate) и раскладываются по сетке
 глобальной сборкой (solve): результат — catalog/layout.json (для каждой
 ячейки: деталь, поворот, уверенность) и debug/assembled.jpg (картинка,
-собранная из самих деталей — ошибки видны глазом).
+собранная из самих деталей — ошибки видны глазом). Затем по итоговым
+позициям строятся кандидаты-стыки (match) и шаги сборки (plan,
+catalog/steps.json). Без образца — цепочка рамки и «острова» (no_reference).
 
 Примеры:
     python -m app.cli.pipeline_cli --input path/to/batch_photos --puzzle-id demo --out data/debug/pipeline_run
@@ -24,6 +26,9 @@ import cv2
 from app.core.logging import setup_logging
 from app.pipeline.describe import describe_piece
 from app.pipeline.locate import PieceAppearance, ReferenceGridIndex, build_reference_index, locate_appearances, piece_appearance, render_layout
+from app.pipeline.match import build_edge_matches
+from app.pipeline.no_reference import build_frame_chain, cluster_islands
+from app.pipeline.plan import next_steps_with_catalog
 from app.pipeline.preprocess import preprocess_frame
 from app.pipeline.schemas import PieceKind
 from app.pipeline.segment import segment_pieces
@@ -41,6 +46,8 @@ def run_pipeline_on_folder(
     reference_path: Path | None = None,
     grid_rows: int | None = None,
     grid_cols: int | None = None,
+    skip_match: bool = False,
+    max_steps: int = 10000,
 ) -> dict:
     debug_dir = out_dir / "debug"
     catalog_dir = out_dir / "catalog"
@@ -120,13 +127,37 @@ def run_pipeline_on_folder(
         layout_summary = {
             "cells": ref_index.rows * ref_index.cols,
             "placed": len(layout.placements),
-            "by_source": {src: sources.count(src) for src in ("anchor", "growth", "fallback")},
+            "by_source": {src: sources.count(src) for src in ("anchor", "growth", "refine", "fallback")},
         }
 
     kind_counts = {k.value: 0 for k in PieceKind}
     kind_counts["unknown"] = 0
     for p in all_pieces:
         kind_counts[p.kind.value if p.kind else "unknown"] += 1
+
+    edges_count = steps_count = None
+    frame_chain_length = island_count = None
+    if not skip_match and len(all_pieces) >= 2:
+        if ref_index is not None:
+            edges = build_edge_matches(all_pieces)
+            steps = next_steps_with_catalog(edges, all_pieces, max_steps=max_steps)
+            edges_count, steps_count = len(edges), len(steps)
+            with (catalog_dir / "steps.json").open("w", encoding="utf-8") as f:
+                json.dump([s.model_dump() for s in steps], f, ensure_ascii=False, indent=2)
+            logger.info("match+plan: %d кандидатов-рёбер, %d шагов сборки", edges_count, steps_count)
+        else:
+            # Без образца позиционного сигнала нет вовсе -> рамка собирается
+            # цепочкой по форме/цвету шва (no_reference.build_frame_chain),
+            # а внутренние детали группируются по похожести на "острова"
+            # для раскладки по лоткам (no_reference.cluster_islands).
+            chain = build_frame_chain(all_pieces)
+            islands = cluster_islands(all_pieces)
+            frame_chain_length, island_count = len(chain), len(islands)
+            with (catalog_dir / "frame_chain.json").open("w", encoding="utf-8") as f:
+                json.dump(chain, f, ensure_ascii=False, indent=2)
+            with (catalog_dir / "islands.json").open("w", encoding="utf-8") as f:
+                json.dump(islands, f, ensure_ascii=False, indent=2)
+            logger.info("no_reference: цепочка рамки из %d деталей, %d островов", frame_chain_length, island_count)
 
     summary = {
         "puzzle_id": puzzle_id,
@@ -138,6 +169,10 @@ def run_pipeline_on_folder(
         "kind_counts": kind_counts,
         "located": sum(1 for p in all_pieces if p.location_candidates) if ref_index is not None else None,
         "layout": layout_summary,
+        "edge_matches": edges_count,
+        "assembly_steps": steps_count,
+        "frame_chain_length": frame_chain_length,
+        "island_count": island_count,
         "frames": frames_report,
     }
 
@@ -158,6 +193,8 @@ def main() -> None:
     parser.add_argument("--reference", type=str, default=None, help="Фото коробки — если задано, запускаются locate и глобальная сборка")
     parser.add_argument("--grid-rows", type=int, default=None, help="Число строк сетки образца")
     parser.add_argument("--grid-cols", type=int, default=None, help="Число столбцов сетки образца")
+    parser.add_argument("--skip-match", action="store_true", help="Не считать сопоставление сторон и план сборки")
+    parser.add_argument("--max-steps", type=int, default=10000, help="Максимум шагов сборки в плане")
     args = parser.parse_args()
 
     summary = run_pipeline_on_folder(
@@ -167,6 +204,8 @@ def main() -> None:
         reference_path=Path(args.reference) if args.reference else None,
         grid_rows=args.grid_rows,
         grid_cols=args.grid_cols,
+        skip_match=args.skip_match,
+        max_steps=args.max_steps,
     )
     logger.info("Готово: %s", json.dumps(summary, ensure_ascii=False))
 
