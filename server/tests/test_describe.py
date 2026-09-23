@@ -99,3 +99,36 @@ def test_embeddings_present_and_finite(described_batch):
         assert p.embedding is not None
         arr = np.array(p.embedding)
         assert np.all(np.isfinite(arr))
+
+
+def test_corners_exact_on_generator_geometry():
+    """Углы по точной геометрии генератора (без рендеринга): все 4 угла
+    каждой детали должны совпасть с узлами сетки — включая детали, у
+    которых обе стороны угла с выступами (там прежний поиск по остроте
+    вершин выпуклой оболочки выбирал вершины головок замков)."""
+    from app.core.config import get_config
+    from app.pipeline.describe import _find_corners
+    from app.synth.piece_shapes import DEFAULT_TAB_PARAMS, build_puzzle_grid
+
+    px_per_mm = 6.0
+    grid = build_puzzle_grid(6, 6, 25.0, np.random.default_rng(3), dict(DEFAULT_TAB_PARAMS))
+    ds = get_config().section("describe")
+    both_tabs_seen = 0
+    for piece in grid:
+        contour = piece.contour * px_per_mm
+        # Плотная передискретизация (прямые стороны в геометрии — 2 точки).
+        closed = np.vstack([contour, contour[:1]])
+        seg = np.linalg.norm(np.diff(closed, axis=0), axis=1)
+        cum = np.concatenate([[0.0], np.cumsum(seg)])
+        t = np.arange(0.0, cum[-1], 1.0)
+        dense = np.stack([np.interp(t, cum, closed[:, 0]), np.interp(t, cum, closed[:, 1])], axis=1)
+        found = _find_corners(dense, ds)
+        assert found is not None
+        _, corners = found
+        r, c, s = piece.row, piece.col, 25.0 * px_per_mm
+        truth = np.array([[c * s, r * s], [(c + 1) * s, r * s], [(c + 1) * s, (r + 1) * s], [c * s, (r + 1) * s]])
+        err = np.linalg.norm(corners[:, None, :] - truth[None, :, :], axis=2).min(axis=1)
+        assert err.max() < 0.5 * px_per_mm, (piece.row, piece.col, err)
+        kinds = [side.kind for side in piece.sides]
+        both_tabs_seen += any(kinds[i] == "tab" and kinds[(i + 1) % 4] == "tab" for i in range(4))
+    assert both_tabs_seen >= 5

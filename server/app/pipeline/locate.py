@@ -312,22 +312,22 @@ def correct_lighting(apps: list[PieceAppearance], costs: np.ndarray, index: Refe
     min_samples = int(lc["lighting_min_samples"])
     all_gains = [g for data in samples.values() for _, g in data]
     fallback = np.median(np.array(all_gains), axis=0) if all_gains else np.ones(3)
-    fitted = 0
-    for a in apps:
-        data = samples.get(a.batch_number, [])
-        pos = a.center_px / np.array(a.frame_shape[::-1], np.float64)
+    fields = {}
+    for batch, data in samples.items():
         if len(data) >= min_samples:
             x = np.array([[1.0, p[0], p[1]] for p, _ in data])
             y = np.array([g for _, g in data])
-            coef, *_ = np.linalg.lstsq(x, y, rcond=None)
-            gain = np.array([1.0, pos[0], pos[1]]) @ coef
-        else:
+            fields[batch], *_ = np.linalg.lstsq(x, y, rcond=None)
+    for a in apps:
+        coef = fields.get(a.batch_number)
+        if coef is None:
             gain = fallback
+        else:
+            pos = a.center_px / np.array(a.frame_shape[::-1], np.float64)
+            gain = np.array([1.0, pos[0], pos[1]]) @ coef
         a.gain = np.clip(gain, 0.4, 2.5).astype(np.float32)
-    for batch, data in samples.items():
-        fitted += len(data) >= min_samples
-    logger.info("locate: поле освещения оценено для %d кадров по %d уверенным деталям", fitted, len(all_gains))
-    return fitted
+    logger.info("locate: поле освещения оценено для %d кадров по %d уверенным деталям", len(fields), len(all_gains))
+    return len(fields)
 
 
 def _color_model_features(bgr: np.ndarray, pos: np.ndarray) -> np.ndarray:

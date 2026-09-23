@@ -202,7 +202,13 @@ class _Assembler:
         if len(keys) >= 10:
             d = np.array([self.shape_cache[k] for k in keys])
             self.sigma_s = max(float(np.median(d)), 1e-3)
-            self.spread_s = max(1.4826 * float(np.median(np.abs(d - self.sigma_s))), 0.1 * self.sigma_s)
+            # Разброс — по хвосту (95-й перцентиль), а не только по MAD:
+            # распределение верных пар тяжелохвостое (неточные углы,
+            # локальные дефекты контура), и оценка по MAD отбраковывала бы
+            # заметную долю верных стыков.
+            mad = 1.4826 * float(np.median(np.abs(d - self.sigma_s)))
+            tail = (float(np.percentile(d, 95)) - self.sigma_s) / 1.645
+            self.spread_s = max(mad, tail, 0.1 * self.sigma_s)
         else:
             self.sigma_s = float(get_config().section("match")["shape_scale_mm"])
             self.spread_s = 0.2 * self.sigma_s
