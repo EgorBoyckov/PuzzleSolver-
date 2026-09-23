@@ -18,7 +18,44 @@
         <span id="server-status" class="badge badge--pending">проверка сервера…</span>
       </header>
 
-      <main class="screen" id="camera-screen">
+      <section id="setup-screen" class="screen">
+        <h2>Новый пазл</h2>
+        <p class="hint-text">Придумайте название пазла и, если есть, загрузите фото картинки коробки с числом
+          строк/столбцов деталей — это включит привязку деталей к образцу и подсказки сборки.</p>
+        <form id="setup-form" class="form">
+          <label class="field">
+            <span>Название пазла</span>
+            <input id="puzzle-id-input" type="text" required placeholder="напр. more-cats-2000" />
+          </label>
+          <label class="field">
+            <span>Фото коробки (необязательно)</span>
+            <input id="reference-input" type="file" accept="image/*" />
+          </label>
+          <div class="field-row">
+            <label class="field">
+              <span>Строк сетки</span>
+              <input id="grid-rows-input" type="number" min="1" />
+            </label>
+            <label class="field">
+              <span>Столбцов сетки</span>
+              <input id="grid-cols-input" type="number" min="1" />
+            </label>
+          </div>
+          <button type="submit" class="btn btn--primary btn--lg">Создать пазл</button>
+        </form>
+        <p id="setup-error" class="error-text" hidden></p>
+        <p id="setup-existing" class="hint-text" hidden></p>
+      </section>
+
+      <nav id="nav-bar" class="nav-bar" hidden>
+        <button id="nav-camera-btn" class="nav-bar__btn nav-bar__btn--active">Камера</button>
+        <button id="nav-assembly-btn" class="nav-bar__btn">Сборка</button>
+        <button id="nav-ar-btn" class="nav-bar__btn">AR</button>
+        <span id="nav-puzzle-name" class="nav-bar__name"></span>
+      </nav>
+
+      <main class="screen" id="camera-screen" hidden>
+        <p id="batch-status" class="hint-text"></p>
         <div class="camera-frame">
           <video id="camera-video" playsinline autoplay muted></video>
           <canvas id="camera-overlay"></canvas>
@@ -47,6 +84,32 @@
           <button id="upload-btn" class="btn btn--primary btn--lg">Отправить на сервер</button>
         </div>
         <p id="upload-status" class="hint-text"></p>
+      </section>
+
+      <section id="assembly-screen" class="screen" hidden>
+        <h2>Сборка</h2>
+        <p id="assembly-summary" class="hint-text"></p>
+        <button id="refresh-steps-btn" class="btn btn--secondary">Обновить</button>
+        <div id="steps-list" class="steps-list"></div>
+        <p id="assembly-empty" class="hint-text" hidden>Пока нет шагов — загрузите фото партий деталей на вкладке
+          «Камера».</p>
+      </section>
+
+      <section id="ar-screen" class="screen" hidden>
+        <h2>AR-подсказка</h2>
+        <p class="hint-text">Наведите камеру на детали так, чтобы маркер тоже попал в кадр — сервер узнает
+          детали и подпишет их прямо на видео. Это не WebXR с привязкой к месту в пространстве, а просто
+          периодическое наложение по последнему снимку — метки могут немного отставать от движения камеры.</p>
+        <div class="camera-frame">
+          <video id="ar-video" playsinline autoplay muted></video>
+          <canvas id="ar-overlay"></canvas>
+          <div id="ar-placeholder" class="camera-placeholder">
+            <p>Камера не запущена</p>
+            <button id="ar-start-camera-btn" class="btn btn--primary btn--lg">Включить камеру</button>
+          </div>
+        </div>
+        <p id="ar-status" class="hint-text"></p>
+        <p id="ar-error" class="error-text" hidden></p>
       </section>
     </div>
     <script type="module" src="/src/main.ts"></script>
