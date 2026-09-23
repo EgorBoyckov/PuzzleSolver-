@@ -138,6 +138,9 @@ def main() -> None:
         s[1] += cands[0] == rc
         s[2] += rc in cands
 
+    kind_total = sum(1 for p in pieces if p.id in truth)
+    kind_ok = sum(1 for p in pieces if p.id in truth and p.kind is not None and p.kind.value == truth[p.id]["kind"])
+
     asm = {True: [0, 0, 0], False: [0, 0, 0]}
     for pl in layout.placements:
         p = located.pieces[pl.piece_index]
@@ -160,6 +163,8 @@ def main() -> None:
     arot = asm[True][2] + asm[False][2]
     print()
     print("=" * 78)
+    print(f"Этап 1: найдено {found} деталей на {total_cells} ячеек; тип угол/край/центр верен у "
+          f"{pct(kind_ok, kind_total):.3f}% сопоставленных с разметкой")
     print("locate (только сходство с образцом):")
     print(f"  Текстурные зоны: n={tn:5d}  top1={pct(t1_, tn):6.2f}%  top3={pct(t3_, tn):6.2f}%  критерий top3>=90%  {'OK' if t3_ >= 0.9 * tn else 'FAIL'}")
     print(f"  Однотонные зоны: n={mn:5d}  top1={pct(m1, mn):6.2f}%  top3={pct(m3, mn):6.2f}%  критерий top3>=50%  {'OK' if m3 >= 0.5 * mn else 'FAIL'}")

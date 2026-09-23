@@ -280,9 +280,8 @@ class _Assembler:
         other = np.array([scores[j] for j in order[1:] if kept[j][0] != best_p])
         mass = np.exp(-(other - best_score) / 2.0).sum() + np.exp(-(null_score - best_score) / 2.0)
         prob = float(1.0 / (1.0 + mass))
-        gap = prob
         priority = prob * (1.0 + self.neighbor_bonus * (len(nbs) - 1))
-        return priority, gap, best_p, best_rot
+        return priority, prob, best_p, best_rot
 
     def grow(self, min_prob: float = 0.0) -> int:
         """Рост от стоящих деталей: самая уверенная ячейка фронта ставится
@@ -418,13 +417,6 @@ class _Assembler:
                 out.append(int(cell))
         return out
 
-    def _set(self, cell: int, piece: int, rot: int) -> None:
-        if piece < 0:
-            self.cell_piece[cell] = -1
-            return
-        self.cell_piece[cell], self.cell_rot[cell] = piece, rot
-        self.piece_cell[piece] = cell
-
     def _best_rotation(self, cell: int, piece: int, region: set[int]) -> tuple[int, float]:
         best_rot, best_e = -1, np.inf
         old_p, old_r = int(self.cell_piece[cell]), int(self.cell_rot[cell])
@@ -448,9 +440,12 @@ class _Assembler:
             need = 2 if kq == 1 else 1 if kq == 2 else -1
             ok &= self.kinds_rot[:, :, i] == need
         cur = int(self.cell_piece[cell])
-        ok[cur if cur >= 0 else 0, :] &= cur < 0
+        if cur >= 0:
+            ok[cur] = False
         placed_at = self.piece_cell
-        anchor_piece = np.array([placed_at[p] >= 0 and self.cell_source[placed_at[p]] == "anchor" for p in range(len(placed_at))])
+        anchor_cells = np.array([src == "anchor" for src in self.cell_source])
+        anchor_piece = np.zeros(len(placed_at), dtype=bool)
+        anchor_piece[self.cell_piece[anchor_cells]] = True
         ok &= ~anchor_piece[:, None]
         pr = np.argwhere(ok)
         if len(pr) == 0:
