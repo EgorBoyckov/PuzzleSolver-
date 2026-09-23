@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from app.core.config import get_config
 from app.core.storage import PuzzleState, PuzzleStore, RejectedEdge
+from app.pipeline.ar import recognize_raw_frame
 from app.pipeline.describe import describe_piece
 from app.pipeline.locate import ReferenceGridIndex, build_reference_index, locate_piece, refit_reference_colors
 from app.pipeline.match import find_side_candidates
@@ -201,6 +202,13 @@ class NoReferenceResult(BaseModel):
     islands: dict[str, list[str]]
 
 
+class ARFrameResult(BaseModel):
+    marker_found: bool
+    image_width: int
+    image_height: int
+    pieces: list[RecognizedPiece]
+
+
 # --- эндпоинты ---
 
 
@@ -363,3 +371,28 @@ async def recognize(puzzle_id: str, file: UploadFile) -> list[RecognizedPiece]:
     catalog = [p for p in state.pieces if not p.is_suspect and len(p.sides) == 4]
     results = recognize_pieces_on_frame(rectified, catalog, frame.mm_per_pixel, puzzle_id=puzzle_id, batch_number=0)
     return [RecognizedPiece(piece_id=pid, x_px=x, y_px=y, rotation_deg=rot) for pid, (x, y, rot) in results.items()]
+
+
+@router.post("/{puzzle_id}/ar_frame", response_model=ARFrameResult)
+async def ar_frame(puzzle_id: str, file: UploadFile) -> ARFrameResult:
+    """Этап 6: узнать детали каталога прямо на сыром кадре живого видео
+    камеры (без выпрямления по маркеру — координаты должны совпадать с
+    тем, что видит пользователь на экране, для оверлея). В отличие от
+    остальных эндпоинтов, декодирует кадр прямо из памяти, не сохраняя на
+    диск — этот эндпоинт дергается часто (раз в 1-2с при активном
+    AR-режиме), в отличие от загрузки партий."""
+    store = _get_store()
+    state = _load_or_404(store, puzzle_id)
+
+    content = await file.read()
+    image_bgr = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image_bgr is None:
+        raise HTTPException(400, "Не удалось декодировать изображение")
+
+    catalog = [p for p in state.pieces if not p.is_suspect and len(p.sides) == 4]
+    marker_found, results = recognize_raw_frame(image_bgr, catalog, puzzle_id)
+    h, w = image_bgr.shape[:2]
+    return ARFrameResult(
+        marker_found=marker_found, image_width=w, image_height=h,
+        pieces=[RecognizedPiece(piece_id=pid, x_px=x, y_px=y, rotation_deg=rot) for pid, (x, y, rot) in results.items()],
+    )

@@ -81,6 +81,27 @@ def _detect_marker(img: np.ndarray, dictionary_name: str, marker_id: int) -> np.
     return corners[idx][0].astype(np.float32)
 
 
+def detect_marker_and_scale(
+    img: np.ndarray, dictionary_name: str, marker_id: int, marker_size_mm: float
+) -> tuple[np.ndarray | None, float | None]:
+    """Как _detect_marker, но также оценивает масштаб мм/пиксель ПРЯМО в
+    исходном (невыпрямленном) кадре — в отличие от preprocess_frame, где
+    масштаб после гомографии — всегда фиксированная config.preprocess.
+    output_px_per_mm константа (гомография её нормирует), масштаб на сыром
+    кадре зависит от расстояния/угла конкретной съёмки и оценивается по
+    видимому размеру маркера в пикселях. Нужно для этапа 6 (AR-оверлей
+    поверх живого видео камеры, где перерисовывать через гомографию каждый
+    кадр не имеет смысла — оверлей должен лечь на ТО ЖЕ изображение,
+    которое видит пользователь)."""
+    corners = _detect_marker(img, dictionary_name, marker_id)
+    if corners is None:
+        return None, None
+    side_px = float(np.mean(np.linalg.norm(corners - np.roll(corners, -1, axis=0), axis=1)))
+    if side_px <= 0:
+        return corners, None
+    return corners, marker_size_mm / side_px
+
+
 def _white_balance_gains(
     rectified: np.ndarray,
     marker_dst: np.ndarray,

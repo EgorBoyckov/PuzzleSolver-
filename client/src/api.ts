@@ -32,6 +32,20 @@ export interface BatchUploadResult {
   steps_total: number;
 }
 
+export interface RecognizedPiece {
+  piece_id: string;
+  x_px: number;
+  y_px: number;
+  rotation_deg: number;
+}
+
+export interface ARFrameResult {
+  marker_found: boolean;
+  image_width: number;
+  image_height: number;
+  pieces: RecognizedPiece[];
+}
+
 async function unwrap<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let detail = res.statusText;
@@ -89,4 +103,11 @@ export async function sendFeedback(
     body: JSON.stringify({ status }),
   });
   return unwrap<AssemblyStep[]>(res);
+}
+
+export async function arFrame(puzzleId: string, blob: Blob): Promise<ARFrameResult> {
+  const form = new FormData();
+  form.append("file", blob, `ar_${Date.now()}.jpg`);
+  const res = await fetch(`${BASE}/${encodeURIComponent(puzzleId)}/ar_frame`, { method: "POST", body: form });
+  return unwrap<ARFrameResult>(res);
 }

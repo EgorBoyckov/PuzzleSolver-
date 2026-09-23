@@ -83,13 +83,15 @@ body {
   justify-content: center;
 }
 
-#camera-video {
+#camera-video,
+#ar-video {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-#camera-overlay {
+#camera-overlay,
+#ar-overlay {
   position: absolute;
   inset: 0;
   pointer-events: none;

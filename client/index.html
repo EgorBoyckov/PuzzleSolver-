@@ -50,6 +50,7 @@
       <nav id="nav-bar" class="nav-bar" hidden>
         <button id="nav-camera-btn" class="nav-bar__btn nav-bar__btn--active">Камера</button>
         <button id="nav-assembly-btn" class="nav-bar__btn">Сборка</button>
+        <button id="nav-ar-btn" class="nav-bar__btn">AR</button>
         <span id="nav-puzzle-name" class="nav-bar__name"></span>
       </nav>
 
@@ -92,6 +93,23 @@
         <div id="steps-list" class="steps-list"></div>
         <p id="assembly-empty" class="hint-text" hidden>Пока нет шагов — загрузите фото партий деталей на вкладке
           «Камера».</p>
+      </section>
+
+      <section id="ar-screen" class="screen" hidden>
+        <h2>AR-подсказка</h2>
+        <p class="hint-text">Наведите камеру на детали так, чтобы маркер тоже попал в кадр — сервер узнает
+          детали и подпишет их прямо на видео. Это не WebXR с привязкой к месту в пространстве, а просто
+          периодическое наложение по последнему снимку — метки могут немного отставать от движения камеры.</p>
+        <div class="camera-frame">
+          <video id="ar-video" playsinline autoplay muted></video>
+          <canvas id="ar-overlay"></canvas>
+          <div id="ar-placeholder" class="camera-placeholder">
+            <p>Камера не запущена</p>
+            <button id="ar-start-camera-btn" class="btn btn--primary btn--lg">Включить камеру</button>
+          </div>
+        </div>
+        <p id="ar-status" class="hint-text"></p>
+        <p id="ar-error" class="error-text" hidden></p>
       </section>
     </div>
     <script type="module" src="/src/main.ts"></script>

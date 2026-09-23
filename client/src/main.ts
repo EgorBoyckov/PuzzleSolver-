@@ -52,12 +52,25 @@ const refreshStepsBtn = $<HTMLButtonElement>("refresh-steps-btn");
 const stepsListEl = $<HTMLDivElement>("steps-list");
 const assemblyEmptyEl = $<HTMLParagraphElement>("assembly-empty");
 
+// --- AR (этап 6) ---
+const navArBtn = $<HTMLButtonElement>("nav-ar-btn");
+const arScreen = $<HTMLElement>("ar-screen");
+const arVideoEl = $<HTMLVideoElement>("ar-video");
+const arOverlayEl = $<HTMLCanvasElement>("ar-overlay");
+const arPlaceholderEl = $<HTMLDivElement>("ar-placeholder");
+const arStartCameraBtn = $<HTMLButtonElement>("ar-start-camera-btn");
+const arStatusEl = $<HTMLParagraphElement>("ar-status");
+const arErrorEl = $<HTMLParagraphElement>("ar-error");
+
 const camera = new Camera(videoEl);
+const arCamera = new Camera(arVideoEl);
 let lastPhotoBlob: Blob | null = null;
 let stopLevelWatch: (() => void) | null = null;
 let puzzleId: string | null = localStorage.getItem(STORAGE_KEY);
+let arPollHandle: ReturnType<typeof setInterval> | null = null;
+let arRequestInFlight = false;
 
-type MainTab = "camera" | "assembly";
+type MainTab = "camera" | "assembly" | "ar";
 
 async function checkServerHealth(): Promise<void> {
   try {
@@ -87,12 +100,15 @@ function showMainTab(tab: MainTab): void {
 
   navCameraBtn.classList.toggle("nav-bar__btn--active", tab === "camera");
   navAssemblyBtn.classList.toggle("nav-bar__btn--active", tab === "assembly");
+  navArBtn.classList.toggle("nav-bar__btn--active", tab === "ar");
 
   cameraScreen.hidden = tab !== "camera";
   reviewScreen.hidden = true;
   assemblyScreen.hidden = tab !== "assembly";
+  arScreen.hidden = tab !== "ar";
 
   if (tab === "assembly") void refreshAssembly();
+  if (tab !== "ar") stopArPolling();
 }
 
 async function startCamera(): Promise<void> {
@@ -215,6 +231,86 @@ async function refreshAssembly(): Promise<void> {
   }
 }
 
+async function startArCamera(): Promise<void> {
+  arErrorEl.hidden = true;
+  try {
+    await arCamera.start();
+    arPlaceholderEl.hidden = true;
+    startArPolling();
+  } catch (err) {
+    arErrorEl.hidden = false;
+    arErrorEl.textContent =
+      "Не удалось включить камеру. Разрешите доступ к камере в браузере и убедитесь, что страница открыта по HTTPS.";
+    console.error(err);
+  }
+}
+
+function startArPolling(intervalMs = 1500): void {
+  stopArPolling();
+  arPollHandle = setInterval(() => void pollArFrame(), intervalMs);
+  void pollArFrame();
+}
+
+function stopArPolling(): void {
+  if (arPollHandle !== null) {
+    clearInterval(arPollHandle);
+    arPollHandle = null;
+  }
+}
+
+async function pollArFrame(): Promise<void> {
+  if (!puzzleId || arRequestInFlight) return;
+  arRequestInFlight = true;
+  try {
+    const blob = await arCamera.capturePhoto();
+    const result = await api.arFrame(puzzleId, blob);
+    drawArOverlay(result);
+    arStatusEl.textContent = result.marker_found
+      ? `Узнано деталей: ${result.pieces.length}`
+      : "Маркер не виден — наведите камеру так, чтобы он попал в кадр";
+  } catch (err) {
+    arStatusEl.textContent = "Не удалось получить подсказку с сервера.";
+    console.error(err);
+  } finally {
+    arRequestInFlight = false;
+  }
+}
+
+function drawArOverlay(result: api.ARFrameResult): void {
+  const rect = arVideoEl.getBoundingClientRect();
+  arOverlayEl.width = rect.width;
+  arOverlayEl.height = rect.height;
+  const ctx = arOverlayEl.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, arOverlayEl.width, arOverlayEl.height);
+  if (result.image_width === 0 || result.image_height === 0) return;
+
+  // Видео растянуто на контейнер через object-fit: cover — переводим
+  // координаты сервера (в пикселях снятого кадра) в координаты канваса тем
+  // же кроп-масштабом, а не простым делением на исходные размеры.
+  const scale = Math.max(arOverlayEl.width / result.image_width, arOverlayEl.height / result.image_height);
+  const offsetX = (arOverlayEl.width - result.image_width * scale) / 2;
+  const offsetY = (arOverlayEl.height - result.image_height * scale) / 2;
+
+  for (const piece of result.pieces) {
+    const x = piece.x_px * scale + offsetX;
+    const y = piece.y_px * scale + offsetY;
+
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, 2 * Math.PI);
+    ctx.fillStyle = "rgba(217, 126, 46, 0.9)";
+    ctx.fill();
+
+    ctx.font = "13px system-ui, sans-serif";
+    ctx.fillStyle = "#ffffff";
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
+    ctx.lineWidth = 3;
+    const label = `${piece.piece_id} ${piece.rotation_deg}°`;
+    ctx.strokeText(label, x + 10, y - 10);
+    ctx.fillText(label, x + 10, y - 10);
+  }
+}
+
 async function handleSetupSubmit(ev: SubmitEvent): Promise<void> {
   ev.preventDefault();
   setupErrorEl.hidden = true;
@@ -258,7 +354,9 @@ async function init(): Promise<void> {
 setupForm.addEventListener("submit", (ev) => void handleSetupSubmit(ev));
 navCameraBtn.addEventListener("click", () => showMainTab("camera"));
 navAssemblyBtn.addEventListener("click", () => showMainTab("assembly"));
+navArBtn.addEventListener("click", () => showMainTab("ar"));
 refreshStepsBtn.addEventListener("click", () => void refreshAssembly());
+arStartCameraBtn.addEventListener("click", () => void startArCamera());
 
 startCameraBtn.addEventListener("click", () => void startCamera());
 
@@ -282,6 +380,8 @@ uploadBtn.addEventListener("click", () => void uploadPhoto());
 window.addEventListener("beforeunload", () => {
   stopLevelWatch?.();
   camera.stop();
+  stopArPolling();
+  arCamera.stop();
 });
 
 void init();

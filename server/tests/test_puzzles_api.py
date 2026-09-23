@@ -192,3 +192,56 @@ def test_no_reference_flow(api_client, synth_dir):
     assert r_ref.status_code == 200
     r_guard = api_client.get("/api/puzzles/with-ref-for-guard-test/no_reference")
     assert r_guard.status_code == 400
+
+
+def test_ar_frame_endpoint(api_client, synth_dir):
+    out_dir, meta = synth_dir
+
+    r = api_client.post("/api/puzzles", data={"puzzle_id": "ar-test"})
+    assert r.status_code == 200
+
+    first_photo = out_dir / meta["batches"][0]["image"]
+    with first_photo.open("rb") as f:
+        r = api_client.post("/api/puzzles/ar-test/batches", files={"file": (first_photo.name, f, "image/jpeg")})
+    assert r.status_code == 200, r.text
+
+    # AR-эндпоинт работает на СЫРОМ кадре (без ректификации) — используем
+    # тот же исходный файл партии, что и для загрузки, а не выпрямленный.
+    with first_photo.open("rb") as f:
+        r = api_client.post("/api/puzzles/ar-test/ar_frame", files={"file": (first_photo.name, f, "image/jpeg")})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["marker_found"] is True
+    assert body["image_width"] > 0 and body["image_height"] > 0
+    assert len(body["pieces"]) > 0
+    for p in body["pieces"]:
+        assert p["rotation_deg"] in (0, 90, 180, 270)
+        assert 0 <= p["x_px"] <= body["image_width"]
+        assert 0 <= p["y_px"] <= body["image_height"]
+
+
+def test_ar_frame_no_marker_returns_marker_not_found(api_client):
+    import io
+
+    from PIL import Image
+
+    r = api_client.post("/api/puzzles", data={"puzzle_id": "ar-no-marker"})
+    assert r.status_code == 200
+
+    blank = Image.new("RGB", (400, 400), (128, 128, 128))
+    buf = io.BytesIO()
+    blank.save(buf, format="JPEG")
+    buf.seek(0)
+
+    r = api_client.post("/api/puzzles/ar-no-marker/ar_frame", files={"file": ("blank.jpg", buf, "image/jpeg")})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["marker_found"] is False
+    assert body["pieces"] == []
+
+
+def test_ar_frame_unknown_puzzle_404(api_client):
+    import io
+
+    r = api_client.post("/api/puzzles/does-not-exist/ar_frame", files={"file": ("x.jpg", io.BytesIO(b"\xff\xd8"), "image/jpeg")})
+    assert r.status_code == 404
