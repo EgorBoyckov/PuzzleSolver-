@@ -69,8 +69,16 @@ def build_frame_chain(pieces: list[PieceRecord]) -> list[str]:
     current = start
     outgoing_side = start_frame_sides[0]
 
+    # top_k = все рамочные детали, а не match.top_k_candidates_per_side
+    # (это значение подобрано для показа пользователю 2-3 кандидатов при
+    # неуверенном match С позиционным сигналом, а не для внутреннего обхода
+    # без него). С маленьким top_k обход быстро "застревает": по мере роста
+    # цепочки все больше шансов, что все top-K кандидатов уже посещены
+    # (проверено диагностикой на 600 деталях: top_k=3 давал покрытие рамки
+    # 10.53% из 95 деталей, top_k=95 — 76.84%) — без верхнего предела
+    # обход использует весь пул рамочных кандидатов, прежде чем застрять.
     while True:
-        candidates = find_side_candidates(current, outgoing_side, frame_pieces)
+        candidates = find_side_candidates(current, outgoing_side, frame_pieces, top_k=len(frame_pieces))
         next_match = next((c for c in candidates if c.piece_b == start.id or c.piece_b not in visited), None)
         if next_match is None:
             break
