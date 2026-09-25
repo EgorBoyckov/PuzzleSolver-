@@ -74,3 +74,27 @@ def match_pieces_to_ground_truth(
             matches[gt["id"]] = (detected_info[best_idx][1], best_dist)
 
     return matches
+
+
+def rotation_matches_gt(piece: PieceRecord, rotation_deg: int, gt_rotation_deg: float, tolerance_deg: float = 20.0) -> bool:
+    """Совпадает ли поворот сборки (rotation_deg, см. PieceRecord.placement)
+    с углом, на который генератор повернул деталь на столе.
+
+    Генератор поворачивает деталь cv2.getRotationMatrix2D(angle) — это
+    переводит направление верхней кромки (1, 0) в (cos θ, -sin θ). Сборка
+    ставит вверх сторону sides[k], k = locate.canvas_side_index(0, r); сторона
+    k идёт от угла k к углу k+1 против часовой, так что верхняя кромка
+    (слева направо) — это вектор corners[k] - corners[k+1].
+    """
+    from app.pipeline.locate import canvas_side_index
+
+    r = int(rotation_deg) // 90
+    k = canvas_side_index(0, r)
+    corners = np.array([[p.x, p.y] for p in piece.corners_px])
+    if len(corners) != 4:
+        return False
+    top_dir = corners[k] - corners[(k + 1) % 4]
+    theta = math.radians(gt_rotation_deg)
+    expected = np.array([math.cos(theta), -math.sin(theta)])
+    cos_angle = float(np.dot(top_dir, expected) / (np.linalg.norm(top_dir) + 1e-9))
+    return cos_angle > math.cos(math.radians(tolerance_deg))

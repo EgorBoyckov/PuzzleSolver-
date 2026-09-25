@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 
 from app.core.config import get_config
+from app.pipeline.match import relative_rotation_deg
 from app.pipeline.schemas import AssemblyStep, EdgeMatch, PieceKind, PieceRecord, StepStatus
 
 
@@ -68,7 +69,7 @@ def _greedy_select(
                 piece_b=edge.piece_b,
                 side_a=edge.side_a,
                 side_b=edge.side_b,
-                rotation_deg=((edge.side_a + 2 - edge.side_b) % 4) * 90,
+                rotation_deg=relative_rotation_deg(edge.side_a, edge.side_b),
                 sector=_sector(edge, pieces_by_id),
                 confidence=edge.score,
             )

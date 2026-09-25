@@ -65,6 +65,10 @@ class PuzzleStore:
     def rectified_path(self, puzzle_id: str, batch_number: int) -> Path:
         return self.batches_dir(puzzle_id) / f"batch_{batch_number:04d}_rectified.png"
 
+    def appearance_path(self, puzzle_id: str, batch_number: int) -> Path:
+        """Признаки деталей партии для locate (см. locate.save_appearances)."""
+        return self.batches_dir(puzzle_id) / f"batch_{batch_number:04d}_appearance.npz"
+
     def exists(self, puzzle_id: str) -> bool:
         return self._state_path(puzzle_id).exists()
 

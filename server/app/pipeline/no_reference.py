@@ -79,7 +79,16 @@ def build_frame_chain(pieces: list[PieceRecord]) -> list[str]:
     # обход использует весь пул рамочных кандидатов, прежде чем застрять.
     while True:
         candidates = find_side_candidates(current, outgoing_side, frame_pieces, top_k=len(frame_pieces))
-        next_match = next((c for c in candidates if c.piece_b == start.id or c.piece_b not in visited), None)
+        # Следующая деталь рамки стыкуется с цепочкой только стороной ВДОЛЬ
+        # рамки — сторона, смотрящая внутрь пазла, в обход не годится.
+        candidates = [c for c in candidates if c.side_b in _frame_relevant_sides(by_id[c.piece_b])]
+        # Замыкание на стартовой детали принимается, только когда обойдена
+        # почти вся рамка: иначе одна ошибка формы по дороге (цепочка ушла
+        # на чужую сторону пазла) рано «замыкала» рамку и отрезала остальное.
+        can_close = len(visited) >= 0.9 * len(frame_pieces)
+        next_match = next(
+            (c for c in candidates if (c.piece_b == start.id and can_close) or c.piece_b not in visited), None
+        )
         if next_match is None:
             break
 

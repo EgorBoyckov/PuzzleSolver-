@@ -57,8 +57,13 @@ class PieceRecord(BaseModel):
     thumbnail_path: str | None = None
     sides: list[Side] = []
     embedding: list[float] | None = None
-    # Топ-3 кандидата места на образце: (row, col, rotation_deg, confidence).
+    # Топ-3 кандидата места на образце по одному лишь сходству с картинкой
+    # коробки: (row, col, rotation_deg, confidence). rotation_deg = 90*r
+    # означает, что вверх (к строке 0) смотрит сторона sides[(3 + r) % 4].
     location_candidates: list[tuple[int, int, int, float]] = []
+    # Итоговое место в собранном пазле после глобальной сборки (solve):
+    # (row, col, rotation_deg, confidence), взаимно однозначно по деталям.
+    placement: tuple[int, int, int, float] | None = None
     is_suspect: bool = False     # слипшаяся/обрезанная деталь, требует ручной проверки
     suspect_reason: str | None = None   # "merged" | "cut_by_frame" | "odd_area" | ...
     tray_label: str | None = None

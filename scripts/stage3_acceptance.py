@@ -33,15 +33,15 @@ import cv2
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "server"))
 
-from app.core.config import get_config  # noqa: E402
 from app.pipeline.describe import describe_piece  # noqa: E402
-from app.pipeline.locate import build_reference_index, locate_piece, refit_reference_colors  # noqa: E402
+from app.pipeline.locate import build_reference_index, locate_pieces  # noqa: E402
 from app.pipeline.match import build_edge_matches  # noqa: E402
 from app.pipeline.plan import next_steps_with_catalog  # noqa: E402
 from app.pipeline.preprocess import preprocess_frame  # noqa: E402
 from app.pipeline.recognize import recognize_pieces_on_frame  # noqa: E402
 from app.pipeline.schemas import PieceKind  # noqa: E402
 from app.pipeline.segment import segment_pieces  # noqa: E402
+from app.pipeline.solve import solve_layout  # noqa: E402
 
 sys.path.insert(0, str(REPO_ROOT / "server" / "tests"))
 from pipeline_test_utils import match_pieces_to_ground_truth  # noqa: E402
@@ -66,7 +66,6 @@ def main() -> None:
 
     reference_bgr = cv2.imread(str(out_dir / "catalog" / "box.jpg"))
     ref_index = build_reference_index(reference_bgr, meta["rows"], meta["cols"])
-    lc = get_config().section("locate")
 
     all_pieces = []
     frame_lookup = {}
@@ -90,7 +89,6 @@ def main() -> None:
         )
         for p in pieces:
             describe_piece(p, rectified, frame.mm_per_pixel)
-            locate_piece(p, rectified, ref_index)
 
         tolerance_px = 0.5 * meta["piece_size_mm"] / frame.mm_per_pixel
         matches = match_pieces_to_ground_truth(
@@ -107,17 +105,9 @@ def main() -> None:
             first_batch_rectified, first_batch_mm_per_pixel = rectified, frame.mm_per_pixel
 
     t1 = time.time()
-    refitted = refit_reference_colors(
-        ref_index, all_pieces, frame_lookup,
-        confidence_threshold=lc["color_refit_confidence_threshold"],
-        min_samples=lc["color_refit_min_samples"],
-    )
-    if refitted is not None:
-        ref_index = refitted
-        low_conf = [p for p in all_pieces if not p.location_candidates or p.location_candidates[0][3] < lc["color_refit_confidence_threshold"]]
-        for p in low_conf:
-            locate_piece(p, frame_lookup[p.batch_number], ref_index)
-    print(f"locate + цветокоррекция заняли {time.time()-t1:.1f}с")
+    # Позиции деталей для match — из итоговой раскладки глобальной сборки.
+    layout = solve_layout(locate_pieces(all_pieces, frame_lookup, ref_index))
+    print(f"locate + сборка заняли {time.time()-t1:.1f}с, поставлено {len(layout.placements)} деталей")
 
     # --- match ---
     t2 = time.time()

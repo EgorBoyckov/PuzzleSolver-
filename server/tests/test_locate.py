@@ -1,15 +1,20 @@
 import json
+import math
 
 import cv2
+import numpy as np
 import pytest
 
 from app.pipeline.describe import describe_piece
-from app.pipeline.locate import build_reference_index, locate_piece, refit_reference_colors
+from app.pipeline.locate import INFEASIBLE_COST, build_reference_index, canvas_side_index, locate_pieces
+from app.pipeline.match import SideShapeBank, score_side_pair
 from app.pipeline.preprocess import preprocess_frame
+from app.pipeline.schemas import SideKind
 from app.pipeline.segment import segment_pieces
+from app.pipeline.solve import solve_layout
 from app.synth.dataset import SyntheticDatasetConfig, generate_dataset
 
-from .pipeline_test_utils import match_pieces_to_ground_truth
+from .pipeline_test_utils import match_pieces_to_ground_truth, rotation_matches_gt
 
 
 @pytest.fixture(scope="module")
@@ -28,16 +33,14 @@ def located_dataset(tmp_path_factory):
     ref_index = build_reference_index(reference_bgr, meta["rows"], meta["cols"])
 
     all_pieces = []
-    all_gt_batches = []
-    frame_lookup = {}
     frames = {}
+    truth = {}  # piece.id -> gt-аннотация
 
     for batch_summary in meta["batches"]:
         batch_number = batch_summary["batch_number"]
         with (out_dir / batch_summary["annotations"]).open(encoding="utf-8") as f:
             gt_batch = json.load(f)
-        photo = out_dir / batch_summary["image"]
-        frame, rectified, valid_mask = preprocess_frame(photo, "puz", batch_number)
+        frame, rectified, valid_mask = preprocess_frame(out_dir / batch_summary["image"], "puz", batch_number)
         assert frame.accepted
 
         pieces = segment_pieces(
@@ -46,66 +49,46 @@ def located_dataset(tmp_path_factory):
         )
         for p in pieces:
             describe_piece(p, rectified, frame.mm_per_pixel)
-            locate_piece(p, rectified, ref_index)
-
-        frame_lookup[batch_number] = rectified
-        frames[batch_number] = frame
+        frames[batch_number] = rectified
         all_pieces.extend(pieces)
-        all_gt_batches.append((frame, gt_batch))
 
-    refitted = refit_reference_colors(
-        ref_index, all_pieces, frame_lookup, confidence_threshold=0.85, min_samples=30
-    )
-    assert refitted is not None
-    ref_index = refitted
-    for p in all_pieces:
-        if not p.location_candidates or p.location_candidates[0][3] < 0.85:
-            locate_piece(p, frame_lookup[p.batch_number], ref_index)
-
-    matches = {}
-    for frame, gt_batch in all_gt_batches:
         tolerance_px = 0.5 * meta["piece_size_mm"] / frame.mm_per_pixel
-        batch_pieces = [p for p in all_pieces if p.batch_number == frame.batch_number]
-        batch_matches = match_pieces_to_ground_truth(
-            batch_pieces, gt_batch, frame.marker_bbox_px, meta["table_px_per_mm"], 1.0 / frame.mm_per_pixel, tolerance_px
+        matches = match_pieces_to_ground_truth(
+            pieces, gt_batch, frame.marker_bbox_px, meta["table_px_per_mm"], 1.0 / frame.mm_per_pixel, tolerance_px
         )
-        for gt_id, (piece, dist) in batch_matches.items():
-            matches[(frame.batch_number, gt_id)] = (piece, dist, gt_batch)
+        gt_by_id = {gt["id"]: gt for gt in gt_batch["pieces"]}
+        for gt_id, (piece, _dist) in matches.items():
+            truth[piece.id] = gt_by_id[gt_id]
 
-    return meta, ref_index, all_pieces, matches
-
-
-def _gt_rc(gt_batch: dict, gt_id: str) -> tuple[int, int]:
-    for gt in gt_batch["pieces"]:
-        if gt["id"] == gt_id:
-            return gt["grid_row"], gt["grid_col"]
-    raise KeyError(gt_id)
+    located = locate_pieces(all_pieces, frames, ref_index)
+    layout = solve_layout(located)
+    return meta, ref_index, located, layout, truth
 
 
-def test_top3_location_accuracy_reasonable(located_dataset):
-    _meta, _ref_index, _pieces, matches = located_dataset
-    total = 0
-    top1 = top3 = 0
-    for (_batch, gt_id), (piece, _dist, gt_batch) in matches.items():
-        if not piece.location_candidates:
+def _rotation_matches_gt(piece, rotation_deg: int, gt: dict) -> bool:
+    return rotation_matches_gt(piece, rotation_deg, gt["rotation_deg"])
+
+
+def test_top3_location_accuracy(located_dataset):
+    _meta, _ref_index, located, _layout, truth = located_dataset
+    total = top1 = top3 = 0
+    for piece in located.pieces:
+        if piece.id not in truth or not piece.location_candidates:
             continue
         total += 1
-        true_rc = _gt_rc(gt_batch, gt_id)
+        true_rc = (truth[piece.id]["grid_row"], truth[piece.id]["grid_col"])
         cands = [(r, c) for r, c, _rot, _conf in piece.location_candidates]
         top1 += cands[0] == true_rc
         top3 += true_rc in cands
-
-    top1_rate, top3_rate = top1 / total, top3 / total
-    assert top1_rate >= 0.65, f"top1={top1_rate:.2%}"
-    assert top3_rate >= 0.80, f"top3={top3_rate:.2%} (полный критерий >=90% проверяется scripts/stage2_acceptance.py)"
+    assert total >= 140
+    assert top1 / total >= 0.80, f"top1={top1 / total:.2%}"
+    assert top3 / total >= 0.90, f"top3={top3 / total:.2%}"
 
 
 def test_location_candidates_well_formed(located_dataset):
-    meta, ref_index, pieces, _matches = located_dataset
-    for p in pieces:
-        if not p.location_candidates:
-            continue
-        assert len(p.location_candidates) <= 3
+    _meta, ref_index, located, _layout, _truth = located_dataset
+    for p in located.pieces:
+        assert 1 <= len(p.location_candidates) <= 3
         for row, col, rot, conf in p.location_candidates:
             assert 0 <= row < ref_index.rows
             assert 0 <= col < ref_index.cols
@@ -113,10 +96,84 @@ def test_location_candidates_well_formed(located_dataset):
             assert 0.0 <= conf <= 1.0
 
 
-def test_color_refit_rebuilds_a_valid_index(located_dataset):
-    # located_dataset уже утверждает refitted is not None (т.е. уверенных
-    # совпадений хватило и цветокоррекция реально отработала) — здесь лишь
-    # проверяем, что пересобранный индекс структурно валиден.
-    _meta, ref_index, _pieces, _matches = located_dataset
-    assert ref_index.embeddings.shape[0] == ref_index.rows * ref_index.cols
-    assert ref_index.reference_bgr.shape[0] > 0 and ref_index.reference_bgr.shape[1] > 0
+def test_straight_sides_forbid_interior_cells(located_dataset):
+    _meta, ref_index, located, _layout, _truth = located_dataset
+    for k, p in enumerate(located.pieces):
+        n_straight = sum(s.kind == SideKind.STRAIGHT for s in p.sides)
+        feasible_cells = np.where(located.costs[k].min(axis=0) < INFEASIBLE_COST / 10)[0]
+        rows, cols = np.divmod(feasible_cells, ref_index.cols)
+        on_border = (rows == 0) | (rows == ref_index.rows - 1) | (cols == 0) | (cols == ref_index.cols - 1)
+        if n_straight > 0:
+            assert on_border.all(), p.id
+        else:
+            assert not on_border.any(), p.id
+
+
+def test_global_layout_places_pieces_correctly(located_dataset):
+    meta, ref_index, located, layout, truth = located_dataset
+    placed_pieces = [located.pieces[pl.piece_index].id for pl in layout.placements]
+    assert len(set(placed_pieces)) == len(placed_pieces), "деталь поставлена дважды"
+    assert len({(pl.row, pl.col) for pl in layout.placements}) == len(layout.placements)
+
+    total = cell_ok = rot_ok = 0
+    for pl in layout.placements:
+        piece = located.pieces[pl.piece_index]
+        gt = truth.get(piece.id)
+        if gt is None:
+            continue
+        total += 1
+        if (gt["grid_row"], gt["grid_col"]) == (pl.row, pl.col):
+            cell_ok += 1
+            rot_ok += _rotation_matches_gt(piece, pl.rotation * 90, gt)
+        assert piece.placement is not None and piece.placement[:2] == (pl.row, pl.col)
+    assert total >= 140
+    assert cell_ok / total >= 0.97, f"верная ячейка у {cell_ok / total:.2%}"
+    assert rot_ok / total >= 0.97, f"верные ячейка и поворот у {rot_ok / total:.2%}"
+
+
+def test_true_neighbor_side_matches_best(located_dataset):
+    """Форма общей линии разреза: у истинного соседа расстояние меньше,
+    чем у подавляющего большинства случайных впадин/выступов."""
+    _meta, _ref_index, located, _layout, truth = located_dataset
+    by_cell = {}
+    for pl in _layout_true_cells(located, truth):
+        by_cell[(pl[1], pl[2])] = pl
+    bank = SideShapeBank(located.pieces)
+    rng = np.random.default_rng(0)
+    worse_fraction = []
+    for (row, col), (k, _r, _c, rot) in by_cell.items():
+        right = by_cell.get((row, col + 1))
+        if right is None:
+            continue
+        a, b = canvas_side_index(1, rot), canvas_side_index(3, right[3])
+        if not bank.complementary(np.array([k]), np.array([a]), np.array([right[0]]), np.array([b]))[0]:
+            continue
+        true_d = bank.distance(np.array([k]), np.array([a]), np.array([right[0]]), np.array([b]))[0]
+        want = 2 if bank.kinds[k, a] == 1 else 1
+        others = [(q, s) for q in range(len(located.pieces)) for s in range(4) if bank.kinds[q, s] == want and q != right[0]]
+        pick = [others[i] for i in rng.choice(len(others), size=min(40, len(others)), replace=False)]
+        d = bank.distance(np.full(len(pick), k), np.full(len(pick), a), np.array([q for q, _ in pick]), np.array([s for _, s in pick]))
+        worse_fraction.append(float((d > true_d).mean()))
+    assert len(worse_fraction) >= 30
+    assert np.mean(worse_fraction) >= 0.9, np.mean(worse_fraction)
+
+    # score_side_pair — тот же сигнал через публичный API, плюс тип-проверка.
+    p0 = located.pieces[0]
+    straight = [i for i, s in enumerate(p0.sides) if s.kind == SideKind.STRAIGHT]
+    if straight:
+        assert math.isinf(score_side_pair(p0, straight[0], located.pieces[1], 0).score)
+
+
+def _layout_true_cells(located, truth):
+    """(индекс детали, row, col, истинный поворот) по разметке — поворот
+    определяется так же, как в test_global_layout_places_pieces_correctly."""
+    out = []
+    for k, piece in enumerate(located.pieces):
+        gt = truth.get(piece.id)
+        if gt is None:
+            continue
+        for r in range(4):
+            if _rotation_matches_gt(piece, r * 90, gt):
+                out.append((k, gt["grid_row"], gt["grid_col"], r))
+                break
+    return out

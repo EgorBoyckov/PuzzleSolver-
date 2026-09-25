@@ -4,9 +4,12 @@
 Оборачивает конвейер этапов 1-3 (preprocess/segment/describe/locate/match/
 plan/recognize) в HTTP-эндпоинты с персистентностью между запросами
 (app.core.storage.PuzzleStore). Индекс образца (ReferenceGridIndex, с
-эмбеддингами по ячейкам) кэшируется в памяти процесса по puzzle_id — не
+дескрипторами ячеек) кэшируется в памяти процесса по puzzle_id — не
 JSON-сериализуем и пересобирается из сохранённого reference.jpg при
-перезапуске сервера.
+перезапуске сервера. Признаки деталей для locate считаются один раз при
+загрузке партии и хранятся рядом с её кадром (.npz): после каждой партии
+привязка и глобальная сборка (solve) пересчитываются по всем деталям без
+повторного чтения кадров — на 5000 деталях это десятки кадров по ~100 МБ.
 """
 from __future__ import annotations
 
@@ -22,7 +25,14 @@ from app.core.config import get_config
 from app.core.storage import PuzzleState, PuzzleStore, RejectedEdge
 from app.pipeline.ar import recognize_raw_frame
 from app.pipeline.describe import describe_piece
-from app.pipeline.locate import ReferenceGridIndex, build_reference_index, locate_piece, refit_reference_colors
+from app.pipeline.locate import (
+    ReferenceGridIndex,
+    build_reference_index,
+    load_appearances,
+    locate_appearances,
+    piece_appearance,
+    save_appearances,
+)
 from app.pipeline.match import find_side_candidates
 from app.pipeline.no_reference import build_frame_chain, cluster_islands
 from app.pipeline.plan import apply_feedback, next_steps_with_catalog
@@ -30,6 +40,7 @@ from app.pipeline.preprocess import preprocess_frame
 from app.pipeline.recognize import recognize_pieces_on_frame
 from app.pipeline.schemas import AssemblyStep, PieceKind, PuzzleMeta, SideKind, StepStatus
 from app.pipeline.segment import segment_pieces
+from app.pipeline.solve import solve_layout
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/puzzles", tags=["puzzles"])
@@ -66,44 +77,30 @@ def _get_ref_index(store: PuzzleStore, state: PuzzleState) -> ReferenceGridIndex
     return idx
 
 
-def _load_frame_lookup(store: PuzzleStore, puzzle_id: str, batch_numbers: set[int]) -> dict[int, np.ndarray]:
-    lookup: dict[int, np.ndarray] = {}
-    for bn in batch_numbers:
-        path = store.rectified_path(puzzle_id, bn)
-        if path.exists():
-            img = cv2.imread(str(path))
-            if img is not None:
-                lookup[bn] = img
-    return lookup
-
-
 def _recompute_locate(store: PuzzleStore, state: PuzzleState) -> None:
-    """Цветокоррекция образца по всем уверенным деталям каталога (не только
-    последней партии) + повторный поиск для неуверенных — перезагружает
-    выпрямленные кадры прошлых партий с диска, так как между HTTP-запросами
-    они не живут в памяти."""
+    """Привязка к образцу и глобальная сборка по ВСЕМ деталям каталога
+    (цвет образца и освещение кадров оцениваются по уверенным деталям всех
+    партий, а раскладка взаимно однозначна) — по сохранённым признакам
+    партий, без повторного чтения кадров."""
     ref_index = _get_ref_index(store, state)
     if ref_index is None or not state.pieces:
         return
-    lc = get_config().section("locate")
-    batch_numbers = {p.batch_number for p in state.pieces}
-    frame_lookup = _load_frame_lookup(store, state.meta.id, batch_numbers)
-    refitted = refit_reference_colors(
-        ref_index, state.pieces, frame_lookup,
-        confidence_threshold=lc["color_refit_confidence_threshold"],
-        min_samples=lc["color_refit_min_samples"],
-    )
-    if refitted is None:
+    by_id = {p.id: p for p in state.pieces}
+    pieces, apps = [], []
+    for bn in sorted({p.batch_number for p in state.pieces}):
+        path = store.appearance_path(state.meta.id, bn)
+        if not path.exists():
+            continue
+        for app in load_appearances(path):
+            piece = by_id.get(app.piece_id)
+            if piece is not None:
+                pieces.append(piece)
+                apps.append(app)
+    for p in state.pieces:
+        p.placement = None
+    if not apps:
         return
-    _ref_index_cache[state.meta.id] = refitted
-    low_conf = [
-        p for p in state.pieces
-        if not p.location_candidates or p.location_candidates[0][3] < lc["color_refit_confidence_threshold"]
-    ]
-    for p in low_conf:
-        frame = frame_lookup.get(p.batch_number)
-        if frame is not None:
-            locate_piece(p, frame, refitted)
+    solve_layout(locate_appearances(pieces, apps, ref_index))
 
 
 def _recompute_match_and_plan(state: PuzzleState) -> None:
@@ -179,6 +176,8 @@ class PuzzleStatus(BaseModel):
     total_pieces: int
     batches_uploaded: int
     located: int | None
+    # Сколько деталей глобальная сборка поставила на место (только с образцом).
+    placed: int | None
     kind_counts: dict[str, int]
     steps_total: int
     steps_pending: int
@@ -195,6 +194,20 @@ class RecognizedPiece(BaseModel):
     x_px: float
     y_px: float
     rotation_deg: int
+
+
+class LayoutCell(BaseModel):
+    row: int
+    col: int
+    piece_id: str
+    rotation_deg: int
+    confidence: float
+
+
+class LayoutResult(BaseModel):
+    rows: int
+    cols: int
+    cells: list[LayoutCell]
 
 
 class NoReferenceResult(BaseModel):
@@ -272,10 +285,15 @@ async def upload_batch(puzzle_id: str, file: UploadFile) -> BatchUploadResponse:
         marker_bbox_px=frame.marker_bbox_px, valid_mask=valid_mask,
     )
     ref_index = _get_ref_index(store, state)
+    batch_apps = []
     for p in pieces:
         describe_piece(p, rectified, frame.mm_per_pixel)
         if ref_index is not None:
-            locate_piece(p, rectified, ref_index)
+            app = piece_appearance(p, rectified, ref_index)
+            if app is not None:
+                batch_apps.append(app)
+    if batch_apps:
+        save_appearances(store.appearance_path(puzzle_id, batch_number), batch_apps)
 
     state.pieces.extend(pieces)
     state.meta.total_pieces = len(state.pieces)
@@ -312,11 +330,30 @@ async def get_puzzle(puzzle_id: str) -> PuzzleStatus:
         id=puzzle_id, has_reference=state.meta.has_reference, total_pieces=len(state.pieces),
         batches_uploaded=state.next_batch_number - 1,
         located=sum(1 for p in state.pieces if p.location_candidates) if state.meta.has_reference else None,
+        placed=sum(1 for p in state.pieces if p.placement is not None) if state.meta.has_reference else None,
         kind_counts=kind_counts, steps_total=len(state.steps),
         steps_pending=sum(1 for s in state.steps if s.status == StepStatus.PENDING),
         frame_chain_length=len(state.frame_chain) if not state.meta.has_reference else None,
         island_count=len(state.islands) if not state.meta.has_reference else None,
     )
+
+
+@router.get("/{puzzle_id}/layout", response_model=LayoutResult)
+async def get_layout(puzzle_id: str) -> LayoutResult:
+    """Итоговая раскладка глобальной сборки: для каждой поставленной детали —
+    ячейка образца и поворот (rotation_deg = 90*r: вверх смотрит сторона
+    sides[(3 + r) % 4], см. locate.canvas_side_index)."""
+    store = _get_store()
+    state = _load_or_404(store, puzzle_id)
+    if not state.meta.has_reference:
+        raise HTTPException(400, "У пазла нет образца — раскладка по сетке недоступна, используйте /no_reference")
+    cells = [
+        LayoutCell(row=p.placement[0], col=p.placement[1], piece_id=p.id, rotation_deg=p.placement[2], confidence=p.placement[3])
+        for p in state.pieces
+        if p.placement is not None
+    ]
+    cells.sort(key=lambda c: (c.row, c.col))
+    return LayoutResult(rows=state.meta.grid_rows or 0, cols=state.meta.grid_cols or 0, cells=cells)
 
 
 @router.get("/{puzzle_id}/no_reference", response_model=NoReferenceResult)

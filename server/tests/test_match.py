@@ -5,7 +5,7 @@ import cv2
 import pytest
 
 from app.pipeline.describe import describe_piece
-from app.pipeline.locate import build_reference_index, locate_piece, refit_reference_colors
+from app.pipeline.locate import build_reference_index, locate_pieces
 from app.pipeline.match import (
     build_edge_matches,
     color_distance_deltae,
@@ -19,6 +19,7 @@ from app.pipeline.preprocess import preprocess_frame
 from app.pipeline.schemas import PieceRecord, Point2D, Side, SideKind
 from app.synth.dataset import SyntheticDatasetConfig, generate_dataset
 from app.pipeline.segment import segment_pieces
+from app.pipeline.solve import solve_layout
 
 from .pipeline_test_utils import match_pieces_to_ground_truth
 
@@ -44,7 +45,10 @@ def test_shape_distance_zero_for_perfectly_mirrored_curves():
     blank_ys = [-y for y in reversed(tab_ys)]
     tab = _side(1, SideKind.TAB, tab_ys)
     blank = _side(3, SideKind.BLANK, blank_ys)
-    assert shape_distance_mm(tab, blank) == pytest.approx(0.0, abs=1e-9)
+    # Не ровно 0: кривая партнёра плотно передискретизируется по дуге, и у
+    # ломаной с острыми вершинами остаётся погрешность в тысячные доли мм —
+    # на порядок меньше шума верных пар на фото (~0.1 мм).
+    assert shape_distance_mm(tab, blank) == pytest.approx(0.0, abs=0.02)
 
 
 def test_shape_distance_nonzero_for_mismatched_curves():
@@ -84,13 +88,25 @@ def test_score_side_pair_high_for_good_match():
 def test_position_distance_cells_matches_true_neighbor():
     a = _piece("A", [], location_candidates=[(5, 5, 0, 0.9)])
     b_right = _piece("B", [], location_candidates=[(5, 6, 0, 0.9)])
-    # side 1 (индекс) без поворота -> направление "право" (0,+1)
-    d = position_distance_cells(a, 1, b_right, 3)
+    # Стороны идут по контуру против часовой: без поворота сторона 2
+    # смотрит вправо, сторона 0 — влево (см. match.side_direction).
+    d = position_distance_cells(a, 2, b_right, 0)
     assert d == pytest.approx(0.0)
 
     b_wrong = _piece("C", [], location_candidates=[(7, 7, 0, 0.9)])
-    d_far = position_distance_cells(a, 1, b_wrong, 3)
+    d_far = position_distance_cells(a, 2, b_wrong, 0)
     assert d_far > 1.0
+
+
+def test_position_prefers_assembly_placement():
+    # Итоговая раскладка сборки важнее неуверенного top-1 привязки.
+    a = _piece("A", [], location_candidates=[(0, 0, 0, 0.1)])
+    b = _piece("B", [], location_candidates=[(9, 9, 0, 0.1)])
+    assert position_distance_cells(a, 2, b, 0) is None
+    a.placement = (5, 5, 90, 0.9)
+    b.placement = (6, 5, 90, 0.9)
+    # Поворот 90°: сторона 2 смотрит вниз, сторона 0 — вверх.
+    assert position_distance_cells(a, 2, b, 0) == pytest.approx(0.0)
 
 
 def test_position_distance_cells_none_without_location():
@@ -106,6 +122,13 @@ def test_relative_rotation_deg_opposite_sides_zero_rotation():
     # Сторона 1 (право) A стыкуется со стороной 1 (право) B -> B нужно
     # повернуть на 180°, чтобы его правая сторона "смотрела" на левую A.
     assert relative_rotation_deg(1, 1) == 180
+    # Несимметричный случай: стороны нумеруются против часовой, поворот —
+    # по часовой. A без поворота: сторона 0 смотрит влево; у B сторона 1
+    # должна смотреть вправо, а это B с поворотом 270°.
+    assert relative_rotation_deg(0, 1) == 270
+    from app.pipeline.match import side_direction
+    assert side_direction(0, 0) == 3
+    assert side_direction(1, relative_rotation_deg(0, 1)) == 1
 
 
 @pytest.fixture(scope="module")
@@ -137,7 +160,6 @@ def matched_dataset(tmp_path_factory):
         )
         for p in pieces:
             describe_piece(p, rectified, frame.mm_per_pixel)
-            locate_piece(p, rectified, ref_index)
 
         tolerance_px = 0.5 * meta["piece_size_mm"] / frame.mm_per_pixel
         batch_matches = match_pieces_to_ground_truth(
@@ -150,12 +172,8 @@ def matched_dataset(tmp_path_factory):
         frame_lookup[batch_number] = rectified
         all_pieces.extend(pieces)
 
-    refitted = refit_reference_colors(ref_index, all_pieces, frame_lookup, confidence_threshold=0.85, min_samples=30)
-    if refitted is not None:
-        ref_index = refitted
-        for p in all_pieces:
-            if not p.location_candidates or p.location_candidates[0][3] < 0.85:
-                locate_piece(p, frame_lookup[p.batch_number], ref_index)
+    # Позиции деталей — из итоговой раскладки сборки (locate + solve).
+    solve_layout(locate_pieces(all_pieces, frame_lookup, ref_index))
 
     return all_pieces, gt_lookup
 
@@ -172,25 +190,11 @@ def test_build_edge_matches_well_formed(matched_dataset):
 def test_edge_match_precision_against_true_neighbors(matched_dataset):
     """Честная метрика: доля найденных топ-1 совпадений сторон, чьи детали
     действительно физически соседние по эталонной раскладке (манхэттенское
-    расстояние клеток сетки == 1) — не строгий критерий приёмки (его нет в
-    доступной части спецификации для этапа match), а регрессионный порог.
+    расстояние клеток сетки == 1). Регрессионный порог, а не критерий ТЗ.
 
-    Диагностика (scratchpad/diag_match.py, scratchpad/diag_shape_sign.py)
-    подтвердила, что сама математика зеркалирования формы/цвета верна на
-    реальных Side из describe.py (у истинно смежных пар d_shape обычно
-    0.3-1.5мм, у случайных заметно выше) — измеренная точность ~39% на
-    этом датасете объясняется двумя унаследованными ограничениями, а не
-    багом: (1) позиционный член наследует ошибку top-1 locate (78.57%
-    top1 на этом прогоне; попытка расширить его до топ-3 кандидатов
-    ИЗМЕРИМО УХУДШИЛА точность с 48.86% до 26.04% в подвыборке "оба
-    верно локализованы" — топ-3 кандидатов locate часто географически
-    близки друг к другу, поэтому расширение резко повышает шанс
-    случайного позиционного совпадения чужих деталей; отклонено); (2)
-    синтетические выступы/впадины — одна довольно однородная по форме
-    "приподнятый косинус" семья кривых (варьируется в основном глубиной
-    и положением центра), поэтому чистая форма сама по себе не всегда
-    уникально отличает правильную пару от случайной — на это и рассчитан
-    вес цвета/позиции в формуле, а не только формы."""
+    На старом locate (позиция из ненадёжного top-1) и сравнении профиля y(x)
+    было ~27-39%. С позицией из глобальной сборки (piece.placement) и
+    ICP-расстоянием формы — ~99% (150 деталей, seed 21)."""
     pieces, gt_lookup = matched_dataset
     edges = build_edge_matches(pieces)
 
@@ -205,7 +209,7 @@ def test_edge_match_precision_against_true_neighbors(matched_dataset):
 
     assert checked > 0
     precision = correct / checked
-    assert precision >= 0.30, f"edge match precision={precision:.2%} (n={checked})"
+    assert precision >= 0.95, f"edge match precision={precision:.2%} (n={checked})"
 
 
 def test_find_side_candidates_returns_ranked_list(matched_dataset):

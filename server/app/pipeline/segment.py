@@ -31,12 +31,66 @@ def _estimate_background_bgr(image: np.ndarray, sample_size: int = 200) -> np.nd
     return np.median(small.reshape(-1, 3), axis=0)
 
 
-def _foreground_mask(image: np.ndarray, background_bgr: np.ndarray, distance_threshold: float) -> np.ndarray:
+def _background_distance(image: np.ndarray, background_bgr: np.ndarray) -> np.ndarray:
+    """Евклидово расстояние в Lab от цвета фона — непрерывная «карта
+    детальности» пикселя (float32)."""
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
     bg_lab = cv2.cvtColor(np.uint8([[background_bgr]]), cv2.COLOR_BGR2LAB)[0, 0].astype(np.float32)
-    dist = np.linalg.norm(lab - bg_lab, axis=2)
-    mask = (dist > distance_threshold).astype(np.uint8) * 255
-    return mask
+    return np.linalg.norm(lab - bg_lab, axis=2)
+
+
+def _foreground_mask(image: np.ndarray, background_bgr: np.ndarray, distance_threshold: float) -> np.ndarray:
+    dist = _background_distance(image, background_bgr)
+    return (dist > distance_threshold).astype(np.uint8) * 255
+
+
+def refine_contour_subpixel(dist: np.ndarray, contour: np.ndarray, search_px: float = 2.5, step_px: float = 0.25) -> np.ndarray:
+    """Уточнить контур до субпикселя: каждая точка сдвигается вдоль нормали
+    туда, где карта расстояния до фона пересекает середину между уровнем
+    детали (изнутри) и фона (снаружи).
+
+    Контур cv2.findContours целочисленный и после морфологии гуляет на ±1 px
+    (0.17 мм при 6 px/мм) — это того же порядка, что различия формы замков
+    соседних деталей, и прямо ограничивает сравнение сторон (match).
+    Середина перепада (а не фиксированный порог) не смещается от контраста
+    детали с фоном: тёмная и светлая кромка дают одну и ту же линию реза.
+    """
+    pts = contour.reshape(-1, 2).astype(np.float64)
+    n = len(pts)
+    if n < 8:
+        return pts
+    # Нормаль по сглаженной касательной (±3 точки), наружу — по ориентации контура.
+    k = 3
+    tang = np.roll(pts, -k, axis=0) - np.roll(pts, k, axis=0)
+    tang /= np.linalg.norm(tang, axis=1, keepdims=True) + 1e-9
+    # (t_y, -t_x) смотрит внутрь при отрицательной ориентированной площади
+    # (так OpenCV обходит внешние контуры) — разворачиваем наружу.
+    normal = np.stack([tang[:, 1], -tang[:, 0]], axis=1)
+    if cv2.contourArea(pts.astype(np.float32), oriented=True) < 0:
+        normal = -normal
+    offsets = np.arange(-search_px - 1.0, search_px + 1.0 + 1e-9, step_px)
+    samples = pts[:, None, :] + offsets[None, :, None] * normal[:, None, :]      # (n, m, 2)
+    prof = cv2.remap(
+        dist, samples[..., 0].astype(np.float32), samples[..., 1].astype(np.float32),
+        interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE,
+    )                                                                            # (n, m)
+    inner = np.median(prof[:, offsets <= -search_px], axis=1)
+    outer = np.median(prof[:, offsets >= search_px], axis=1)
+    level = 0.5 * (inner + outer)
+    above = prof >= level[:, None]
+    # Ближайший к исходной точке переход «деталь -> фон» при движении наружу.
+    crossing = above[:, :-1] & ~above[:, 1:]
+    center = np.argmin(np.abs(offsets))
+    refined = pts.copy()
+    idx = np.arange(len(offsets) - 1)
+    for i in np.where(crossing.any(axis=1) & (inner - outer > 10.0))[0]:
+        cand = idx[crossing[i]]
+        j = cand[np.argmin(np.abs(cand - center))]
+        v0, v1 = prof[i, j], prof[i, j + 1]
+        t = offsets[j] + step_px * (v0 - level[i]) / max(v0 - v1, 1e-6)
+        if abs(t) <= search_px:
+            refined[i] = pts[i] + t * normal[i]
+    return refined
 
 
 def _marker_paper_region(
@@ -182,7 +236,8 @@ def segment_pieces(
         logger.warning("segment.sam2.enabled=true, но SAM2 ещё не реализован — использую color_threshold")
 
     background_bgr = _estimate_background_bgr(image)
-    mask = _foreground_mask(image, background_bgr, sg["background_color_distance_threshold"])
+    dist = _background_distance(image, background_bgr)
+    mask = (dist > sg["background_color_distance_threshold"]).astype(np.uint8) * 255
     _apply_marker_exclusion(
         mask,
         image,
@@ -256,7 +311,10 @@ def segment_pieces(
             reason = reason or "cut_by_frame"
 
         piece_id = f"B{batch_number:02d}-{i:03d}"
-        contour_pts = contour.reshape(-1, 2).astype(float)
+        if sg.get("subpixel_contour", True):
+            contour_pts = refine_contour_subpixel(dist, contour)
+        else:
+            contour_pts = contour.reshape(-1, 2).astype(float)
 
         thumb_path = None
         if output_dir is not None:
